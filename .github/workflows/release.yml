@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-release:
+    name: Windows x86_64 release
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add clippy rustfmt
+
+      - name: Install Windows resource compiler
+        shell: pwsh
+        run: choco install mingw --yes --no-progress
+
+      - name: Verify source
+        shell: pwsh
+        run: |
+          cargo fmt -- --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
+      - name: Build optimized executable
+        shell: pwsh
+        run: cargo build --release --locked
+
+      - name: Package release
+        id: package
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "manual-${{ github.run_number }}"
+          }
+
+          $archiveName = "ime-reborn-$version-windows-x86_64"
+          $stage = Join-Path "dist" $archiveName
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -LiteralPath "target\release\ime-reborn.exe" -Destination $stage
+          Copy-Item -LiteralPath "README.md" -Destination $stage
+          Copy-Item -LiteralPath "assets\ime-reborn-logo.png" -Destination $stage
+
+          $zip = Join-Path "dist" "$archiveName.zip"
+          Compress-Archive -Path "$stage\*" -DestinationPath $zip -CompressionLevel Optimal
+
+          $checksum = Join-Path "dist" "SHA256SUMS.txt"
+          $files = @("target\release\ime-reborn.exe", $zip)
+          foreach ($file in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
+            $name = Split-Path -Leaf $file
+            "$hash  $name" | Add-Content -LiteralPath $checksum
+          }
+
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "exe=target\release\ime-reborn.exe" >> $env:GITHUB_OUTPUT
+          "checksum=$checksum" >> $env:GITHUB_OUTPUT
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ime-reborn-${{ github.ref_name }}-windows-x86_64
+          path: |
+            ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.exe }}
+            ${{ steps.package.outputs.checksum }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $assets = @(
+            "${{ steps.package.outputs.zip }}",
+            "${{ steps.package.outputs.exe }}",
+            "${{ steps.package.outputs.checksum }}"
+          )
+
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --clobber
+          } else {
+            gh release create $tag @assets --title "ime-reborn $tag" --generate-notes --verify-tag
+          }

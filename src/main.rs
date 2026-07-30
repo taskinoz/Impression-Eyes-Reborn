@@ -63,6 +63,7 @@ const RESIZE_BORDER: i32 = 8;
 const NAME_TIMER: usize = 1;
 const ANIMATION_TIMER: usize = 2;
 const WM_THUMBNAILS_READY: u32 = 0x8001;
+const WM_IMAGE_READY: u32 = 0x8002;
 
 #[derive(Clone, Copy)]
 enum Background {
@@ -103,6 +104,8 @@ struct AppState {
     thumbnails: Option<ThumbnailOverlay>,
     thumbnail_cache: Option<ThumbnailOverlay>,
     thumbnail_generation: u64,
+    navigation_generation: u64,
+    pending_image: Option<PendingImage>,
 }
 
 struct ScaledCache {
@@ -110,6 +113,11 @@ struct ScaledCache {
     width: i32,
     height: i32,
     image: Arc<RgbaImage>,
+}
+
+struct PendingImage {
+    generation: u64,
+    decoded: decoder::DecodedImage,
 }
 
 static STATE: Mutex<AppState> = Mutex::new(AppState {
@@ -127,6 +135,8 @@ static STATE: Mutex<AppState> = Mutex::new(AppState {
     thumbnails: None,
     thumbnail_cache: None,
     thumbnail_generation: 0,
+    navigation_generation: 0,
+    pending_image: None,
 });
 
 fn main() -> windows::core::Result<()> {
@@ -314,6 +324,10 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_IMAGE_READY => {
+            apply_pending_image(hwnd);
+            LRESULT(0)
+        }
         WM_NCHITTEST => {
             let thumbnails_visible = STATE
                 .lock()
@@ -367,6 +381,8 @@ fn load_image(hwnd: HWND, path: PathBuf) {
                 state.image = Some(first_image);
                 state.image_generation = state.image_generation.wrapping_add(1);
                 state.scaled_cache = None;
+                state.navigation_generation = state.navigation_generation.wrapping_add(1);
+                state.pending_image = None;
                 state.animation = decoded.frames;
                 state.animation_index = 0;
                 state.files = images_in_folder(&path);
@@ -562,7 +578,7 @@ enum Selection {
 }
 
 fn select_image(hwnd: HWND, selection: Selection) {
-    let path = {
+    let (path, generation, preview, thumbnail_preload) = {
         let Ok(mut state) = STATE.lock() else { return };
         if state.files.len() < 2 {
             return;
@@ -575,58 +591,121 @@ fn select_image(hwnd: HWND, selection: Selection) {
                 (state.current as isize + direction).rem_euclid(count) as usize
             }
         };
-        state.files[state.current].clone()
+        let path = state.files[state.current].clone();
+        state.navigation_generation = state.navigation_generation.wrapping_add(1);
+        state.pending_image = None;
+        state.animation.clear();
+        state.animation_index = 0;
+        state.overlay_name = display_name(&path);
+        state.thumbnails = None;
+        let preview = state
+            .thumbnail_cache
+            .as_ref()
+            .and_then(|cache| cache.preview_for_path(&path));
+        if let Some(preview) = &preview {
+            state.image = Some(preview.image.clone());
+            state.image_generation = state.image_generation.wrapping_add(1);
+            state.scaled_cache = None;
+        }
+        let thumbnail_preload = if preview.is_none() {
+            state.thumbnail_generation = state.thumbnail_generation.wrapping_add(1);
+            Some((
+                state.files.clone(),
+                state.current,
+                state.thumbnail_generation,
+            ))
+        } else {
+            None
+        };
+        (
+            path,
+            state.navigation_generation,
+            preview,
+            thumbnail_preload,
+        )
     };
 
-    // Keep the existing folder ordering while replacing only the decoded image.
     unsafe {
         let _ = KillTimer(hwnd, ANIMATION_TIMER);
     }
-    match decoder::load_animated(&path) {
-        Ok(decoded) => {
-            let first = decoded.first();
+    if let Some(preview) = &preview {
+        unsafe {
             let (width, height) =
-                unsafe { fit_to_monitor(hwnd, first.image.width(), first.image.height()) };
-            let first_image = first.image.clone();
-            let first_delay = first.delay_ms;
-            let animated = decoded.frames.len() > 1;
-            let preload = if let Ok(mut state) = STATE.lock() {
-                state.image = Some(first_image);
-                state.image_generation = state.image_generation.wrapping_add(1);
-                state.scaled_cache = None;
-                state.animation = decoded.frames;
-                state.animation_index = 0;
-                state.overlay_name = display_name(&path);
-                state.thumbnails = None;
-                let needs_refresh = state
-                    .thumbnail_cache
-                    .as_ref()
-                    .map(|cache| !cache.contains_path(&path))
-                    .unwrap_or(true);
-                if needs_refresh {
-                    state.thumbnail_generation = state.thumbnail_generation.wrapping_add(1);
-                    Some((
-                        state.files.clone(),
-                        state.current,
-                        state.thumbnail_generation,
-                    ))
-                } else {
-                    None
+                fit_to_monitor(hwnd, preview.original_width, preview.original_height);
+            resize_around_center(hwnd, width, height);
+            announce_file(hwnd, &path);
+            render(hwnd);
+        }
+    }
+    if let Some((files, current, thumbnail_generation)) = thumbnail_preload {
+        preload_thumbnails(hwnd, files, current, thumbnail_generation);
+    }
+    decode_selected_image(hwnd, path, generation);
+}
+
+fn decode_selected_image(hwnd: HWND, path: PathBuf, generation: u64) {
+    let hwnd_value = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(35));
+        let still_current = STATE
+            .lock()
+            .map(|state| state.navigation_generation == generation)
+            .unwrap_or(false);
+        if !still_current {
+            return;
+        }
+        let Ok(decoded) = decoder::load_animated(&path) else {
+            return;
+        };
+        let accepted = STATE
+            .lock()
+            .map(|mut state| {
+                if state.navigation_generation != generation {
+                    return false;
                 }
-            } else {
-                None
-            };
-            if let Some((files, current, generation)) = preload {
-                preload_thumbnails(hwnd, files, current, generation);
-            }
+                state.pending_image = Some(PendingImage {
+                    generation,
+                    decoded,
+                });
+                true
+            })
+            .unwrap_or(false);
+        if accepted {
             unsafe {
-                resize_around_center(hwnd, width, height);
-                announce_file(hwnd, &path);
-                render(hwnd);
-                schedule_animation(hwnd, animated, first_delay);
+                let hwnd = HWND(hwnd_value as *mut _);
+                if IsWindow(hwnd).as_bool() {
+                    let _ = PostMessageW(hwnd, WM_IMAGE_READY, WPARAM(0), LPARAM(0));
+                }
             }
         }
-        Err(error) => eprintln!("Could not open {}: {error}", path.display()),
+    });
+}
+
+fn apply_pending_image(hwnd: HWND) {
+    let animation = STATE.lock().ok().and_then(|mut state| {
+        let pending = state.pending_image.take()?;
+        if pending.generation != state.navigation_generation {
+            return None;
+        }
+        let first_image = pending.decoded.first().image.clone();
+        let image_width = first_image.width();
+        let image_height = first_image.height();
+        let first_delay = pending.decoded.first().delay_ms;
+        let animated = pending.decoded.frames.len() > 1;
+        state.image = Some(first_image);
+        state.image_generation = state.image_generation.wrapping_add(1);
+        state.scaled_cache = None;
+        state.animation = pending.decoded.frames;
+        state.animation_index = 0;
+        Some((animated, first_delay, image_width, image_height))
+    });
+    if let Some((animated, first_delay, image_width, image_height)) = animation {
+        unsafe {
+            let (width, height) = fit_to_monitor(hwnd, image_width, image_height);
+            resize_around_center(hwnd, width, height);
+            render(hwnd);
+            schedule_animation(hwnd, animated, first_delay);
+        }
     }
 }
 

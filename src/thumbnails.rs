@@ -33,7 +33,15 @@ impl Rect {
 
 pub struct ThumbnailItem {
     path: PathBuf,
-    image: RgbaImage,
+    image: Arc<RgbaImage>,
+    original_width: u32,
+    original_height: u32,
+}
+
+pub struct ImagePreview {
+    pub image: Arc<RgbaImage>,
+    pub original_width: u32,
+    pub original_height: u32,
 }
 
 #[derive(Clone)]
@@ -52,9 +60,15 @@ impl ThumbnailOverlay {
         let items: Vec<_> = files[start..end]
             .iter()
             .filter_map(|path| {
-                decoder::load(path).ok().map(|image| ThumbnailItem {
-                    path: path.clone(),
-                    image: image.thumbnail(160, 160).to_rgba8(),
+                decoder::load(path).ok().map(|image| {
+                    let original_width = image.width();
+                    let original_height = image.height();
+                    ThumbnailItem {
+                        path: path.clone(),
+                        image: Arc::new(image.thumbnail(160, 160).to_rgba8()),
+                        original_width,
+                        original_height,
+                    }
                 })
             })
             .collect();
@@ -80,8 +94,15 @@ impl ThumbnailOverlay {
         self.hovered.map(|index| self.items[index].path.clone())
     }
 
-    pub fn contains_path(&self, path: &PathBuf) -> bool {
-        self.items.iter().any(|item| &item.path == path)
+    pub fn preview_for_path(&self, path: &PathBuf) -> Option<ImagePreview> {
+        self.items
+            .iter()
+            .find(|item| &item.path == path)
+            .map(|item| ImagePreview {
+                image: item.image.clone(),
+                original_width: item.original_width,
+                original_height: item.original_height,
+            })
     }
 
     pub fn render(&self, pixels: &mut [u8], width: i32, height: i32) {
@@ -214,7 +235,9 @@ mod tests {
     fn paths_are_retained_for_selection() {
         let item = ThumbnailItem {
             path: Path::new("selected.png").to_path_buf(),
-            image: RgbaImage::new(1, 1),
+            image: Arc::new(RgbaImage::new(1, 1)),
+            original_width: 1,
+            original_height: 1,
         };
         let overlay = ThumbnailOverlay {
             items: Arc::new(vec![item]),
@@ -228,7 +251,9 @@ mod tests {
         let overlay = ThumbnailOverlay {
             items: Arc::new(vec![ThumbnailItem {
                 path: PathBuf::from("current.png"),
-                image: RgbaImage::new(1, 1),
+                image: Arc::new(RgbaImage::new(1, 1)),
+                original_width: 1,
+                original_height: 1,
             }]),
             hovered: None,
         };

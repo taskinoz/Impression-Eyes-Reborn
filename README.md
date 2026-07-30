@@ -26,7 +26,9 @@ The first Windows prototype implements the core overlay workflow:
 - always-on-top mode toggled with `F8`;
 - click-and-drag movement from anywhere on the image; and
 - edge/corner resizing with smooth image scaling;
-- mouse-wheel navigation through images in the loaded file's folder; and
+- mouse-wheel navigation through images in the loaded file's folder;
+- zoom from 10% to 800% with `Ctrl` + mouse wheel or `+` / `-`, with `0`
+  restoring the fitted 100% view without changing the window size; and
 - `Escape` or `Alt+F4` to close the active viewer.
 
 Folder navigation follows Explorer-style natural filename ordering (`image2`
@@ -36,6 +38,10 @@ folder boundaries.
 
 The empty startup window shows the drop target and advertises `F1`. Press `F1`
 at any time to display the complete shortcut reference.
+
+The temporary filename label also shows the current zoom percentage. Zooming
+scales and centre-crops the image inside the existing viewport. It resets to
+the fitted 100% view when moving to another image.
 
 On launch, the viewer is centered in the usable area of the monitor containing
 the previously focused window. After launch, moving or navigating the viewer

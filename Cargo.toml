@@ -1,0 +1,24 @@
+[package]
+name = "impression-eyes-reborne"
+version = "0.1.0"
+edition = "2021"
+description = "A tiny, frameless image overlay viewer for Windows"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/"
+
+[dependencies]
+image = { version = "=0.24.9", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
+windows = { version = "0.58.0", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "z"
+panic = "abort"
+strip = true

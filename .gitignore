@@ -1,0 +1,15 @@
+# Proprietary reference binaries and installed application files.
+# These are kept locally for black-box compatibility testing only.
+/ime.exe
+/Impression Eyes/
+
+# Rust build output
+/target/
+
+# Local editor and OS files
+/.idea/
+/.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
+

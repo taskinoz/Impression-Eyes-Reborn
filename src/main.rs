@@ -1,76 +1,139 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod decoder;
+mod navigation;
+mod thumbnails;
+
 use std::{
     env,
     ffi::OsString,
-    fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use image::RgbaImage;
+use navigation::{images_in_folder, same_path};
+use thumbnails::ThumbnailOverlay;
 use windows::{
-    core::w,
+    core::{w, PCWSTR},
     Win32::{
-        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM},
+        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
         Graphics::Gdi::{
-            CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject,
+            CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW,
+            GetMonitorInfoW, MonitorFromWindow, SelectObject, SetBkMode, SetTextColor,
             AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION,
-            DIB_RGB_COLORS, HBITMAP, HDC,
+            CLEARTYPE_QUALITY, DEFAULT_CHARSET, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CENTER, DT_RIGHT,
+            DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FF_DONTCARE, HBITMAP, HDC, MONITORINFO,
+            MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, TRANSPARENT,
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
+            Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_SHIFT},
             Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP},
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadCursorW,
-                PostQuitMessage, RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-                TranslateMessage, UpdateLayeredWindow, CREATESTRUCTW, CW_USEDEFAULT, GWLP_USERDATA,
-                HTCAPTION, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, MSG, SWP_NOMOVE, SWP_NOSIZE,
-                SW_SHOW, ULW_ALPHA, WM_CREATE, WM_DESTROY, WM_DROPFILES, WM_KEYDOWN, WM_MOUSEWHEEL,
-                WM_NCHITTEST, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_POPUP,
+                CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
+                GetMessageW, GetWindowRect, IsWindow, KillTimer, LoadCursorW, MessageBoxW,
+                PostMessageW, PostQuitMessage, RegisterClassW, SetTimer, SetWindowLongPtrW,
+                SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, UpdateLayeredWindow,
+                CREATESTRUCTW, CW_USEDEFAULT, GWLP_USERDATA, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT,
+                HTCAPTION, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, HWND_NOTOPMOST,
+                HWND_TOPMOST, IDC_ARROW, MB_OK, MSG, SWP_NOMOVE, SWP_NOSIZE, SW_SHOW, ULW_ALPHA,
+                WMSZ_BOTTOMLEFT, WMSZ_BOTTOMRIGHT, WMSZ_LEFT, WMSZ_RIGHT, WMSZ_TOP, WMSZ_TOPLEFT,
+                WMSZ_TOPRIGHT, WM_CREATE, WM_DESTROY, WM_DROPFILES, WM_KEYDOWN, WM_KEYUP,
+                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCHITTEST, WM_SIZE, WM_SIZING, WM_TIMER, WNDCLASSW,
+                WS_EX_APPWINDOW, WS_EX_LAYERED, WS_POPUP,
             },
         },
     },
 };
 
-const START_WIDTH: i32 = 256;
-const START_HEIGHT: i32 = 160;
+const START_WIDTH: i32 = 420;
+const START_HEIGHT: i32 = 260;
 const KEY_F7: usize = 0x76;
 const KEY_F8: usize = 0x77;
 const KEY_ESCAPE: usize = 0x1b;
+const KEY_HOME: usize = 0x24;
+const KEY_END: usize = 0x23;
+const KEY_SPACE: usize = 0x20;
+const KEY_BACKSPACE: usize = 0x08;
+const KEY_F1: usize = 0x70;
+const KEY_B: usize = 0x42;
+const KEY_SHIFT: usize = 0x10;
+const RESIZE_BORDER: i32 = 8;
+const NAME_TIMER: usize = 1;
+const ANIMATION_TIMER: usize = 2;
+const WM_THUMBNAILS_READY: u32 = 0x8001;
 
-struct AppState {
-    image: Option<RgbaImage>,
-    transparent: bool,
-    topmost: bool,
-    files: Vec<PathBuf>,
-    current: usize,
+#[derive(Clone, Copy)]
+enum Background {
+    Black,
+    White,
+    Checkerboard,
 }
 
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            image: None,
-            transparent: false,
-            topmost: false,
-            files: Vec::new(),
-            current: 0,
+impl Background {
+    fn next(self) -> Self {
+        match self {
+            Self::Black => Self::White,
+            Self::White => Self::Checkerboard,
+            Self::Checkerboard => Self::Black,
         }
     }
 }
 
+impl Default for Background {
+    fn default() -> Self {
+        Self::Black
+    }
+}
+
+#[derive(Default)]
+struct AppState {
+    image: Option<Arc<RgbaImage>>,
+    image_generation: u64,
+    scaled_cache: Option<ScaledCache>,
+    animation: Vec<decoder::DecodedFrame>,
+    animation_index: usize,
+    transparent: bool,
+    topmost: bool,
+    files: Vec<PathBuf>,
+    current: usize,
+    background: Background,
+    overlay_name: Option<String>,
+    thumbnails: Option<ThumbnailOverlay>,
+    thumbnail_cache: Option<ThumbnailOverlay>,
+    thumbnail_generation: u64,
+}
+
+struct ScaledCache {
+    generation: u64,
+    width: i32,
+    height: i32,
+    image: Arc<RgbaImage>,
+}
+
 static STATE: Mutex<AppState> = Mutex::new(AppState {
     image: None,
+    image_generation: 0,
+    scaled_cache: None,
+    animation: Vec::new(),
+    animation_index: 0,
     transparent: false,
     topmost: false,
     files: Vec::new(),
     current: 0,
+    background: Background::Black,
+    overlay_name: None,
+    thumbnails: None,
+    thumbnail_cache: None,
+    thumbnail_generation: 0,
 });
 
 fn main() -> windows::core::Result<()> {
     let initial_path = env::args_os().nth(1).map(PathBuf::from);
 
     unsafe {
+        let previously_focused = GetForegroundWindow();
         let instance = HINSTANCE(GetModuleHandleW(None)?.0);
         let class_name = w!("ImpressionEyesReborneWindow");
         let class = WNDCLASSW {
@@ -83,7 +146,7 @@ fn main() -> windows::core::Result<()> {
         RegisterClassW(&class);
 
         let hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOOLWINDOW,
+            WS_EX_APPWINDOW | WS_EX_LAYERED,
             class_name,
             w!("Impression Eyes Reborne"),
             WS_POPUP,
@@ -98,11 +161,13 @@ fn main() -> windows::core::Result<()> {
         )?;
 
         DragAcceptFiles(hwnd, true);
+        center_on_focused_monitor(hwnd, previously_focused);
         if let Some(path) = initial_path {
             load_image(hwnd, path);
         } else {
             render(hwnd);
         }
+        center_on_focused_monitor(hwnd, previously_focused);
         let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut message = MSG::default();
@@ -112,6 +177,24 @@ fn main() -> windows::core::Result<()> {
         }
     }
     Ok(())
+}
+
+unsafe fn center_on_focused_monitor(hwnd: HWND, focused: HWND) {
+    let reference = if focused.0.is_null() { hwnd } else { focused };
+    let monitor = MonitorFromWindow(reference, MONITOR_DEFAULTTONEAREST);
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    let mut window = RECT::default();
+    if !GetMonitorInfoW(monitor, &mut info).as_bool() || GetWindowRect(hwnd, &mut window).is_err() {
+        return;
+    }
+    let width = window.right - window.left;
+    let height = window.bottom - window.top;
+    let x = info.rcWork.left + (info.rcWork.right - info.rcWork.left - width) / 2;
+    let y = info.rcWork.top + (info.rcWork.bottom - info.rcWork.top - height) / 2;
+    let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE);
 }
 
 unsafe extern "system" fn window_proc(
@@ -161,12 +244,87 @@ unsafe extern "system" fn window_proc(
             PostQuitMessage(0);
             LRESULT(0)
         }
-        WM_MOUSEWHEEL => {
-            let delta = ((wparam.0 >> 16) as u16) as i16;
-            cycle_image(hwnd, if delta > 0 { -1 } else { 1 });
+        WM_KEYDOWN if wparam.0 == KEY_F1 => {
+            show_shortcuts(hwnd);
             LRESULT(0)
         }
-        WM_NCHITTEST => LRESULT(HTCAPTION as isize),
+        WM_KEYDOWN if wparam.0 == KEY_B => {
+            if let Ok(mut state) = STATE.lock() {
+                state.background = state.background.next();
+            }
+            render(hwnd);
+            LRESULT(0)
+        }
+        WM_KEYDOWN if wparam.0 == KEY_SHIFT => {
+            show_thumbnail_overlay(hwnd);
+            LRESULT(0)
+        }
+        WM_KEYUP if wparam.0 == KEY_SHIFT => {
+            commit_thumbnail_overlay(hwnd);
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            hover_thumbnail(hwnd, lparam);
+            LRESULT(0)
+        }
+        WM_KEYDOWN if wparam.0 == KEY_HOME => {
+            select_image(hwnd, Selection::First);
+            LRESULT(0)
+        }
+        WM_KEYDOWN if wparam.0 == KEY_END => {
+            select_image(hwnd, Selection::Last);
+            LRESULT(0)
+        }
+        WM_KEYDOWN if wparam.0 == KEY_SPACE => {
+            select_image(hwnd, Selection::Relative(1));
+            LRESULT(0)
+        }
+        WM_KEYDOWN if wparam.0 == KEY_BACKSPACE => {
+            select_image(hwnd, Selection::Relative(-1));
+            LRESULT(0)
+        }
+        WM_MOUSEWHEEL => {
+            let delta = ((wparam.0 >> 16) as u16) as i16;
+            select_image(hwnd, Selection::Relative(if delta > 0 { -1 } else { 1 }));
+            LRESULT(0)
+        }
+        WM_SIZE => {
+            render(hwnd);
+            LRESULT(0)
+        }
+        WM_SIZING => {
+            constrain_aspect_ratio(wparam, lparam);
+            LRESULT(1)
+        }
+        WM_TIMER if wparam.0 == NAME_TIMER => {
+            let _ = KillTimer(hwnd, NAME_TIMER);
+            if let Ok(mut state) = STATE.lock() {
+                state.overlay_name = None;
+            }
+            render(hwnd);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == ANIMATION_TIMER => {
+            advance_animation(hwnd);
+            LRESULT(0)
+        }
+        WM_THUMBNAILS_READY => {
+            if GetKeyState(VK_SHIFT.0 as i32) < 0 {
+                show_thumbnail_overlay(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_NCHITTEST => {
+            let thumbnails_visible = STATE
+                .lock()
+                .map(|state| state.thumbnails.is_some())
+                .unwrap_or(false);
+            if thumbnails_visible {
+                LRESULT(HTCLIENT as isize)
+            } else {
+                resize_hit_test(hwnd, lparam)
+            }
+        }
         WM_DESTROY => {
             PostQuitMessage(0);
             LRESULT(0)
@@ -176,130 +334,473 @@ unsafe extern "system" fn window_proc(
 }
 
 fn load_image(hwnd: HWND, path: PathBuf) {
-    match image::open(&path) {
-        Ok(image) => {
-            if let Ok(mut state) = STATE.lock() {
-                state.image = Some(image.to_rgba8());
+    let already_loaded = STATE
+        .lock()
+        .map(|mut state| {
+            let same = state
+                .files
+                .get(state.current)
+                .map(|current| same_path(current, &path))
+                .unwrap_or(false);
+            if same {
+                state.thumbnails = None;
+            }
+            same
+        })
+        .unwrap_or(false);
+    if already_loaded {
+        unsafe { render(hwnd) };
+        return;
+    }
+    unsafe {
+        let _ = KillTimer(hwnd, ANIMATION_TIMER);
+    }
+    match decoder::load_animated(&path) {
+        Ok(decoded) => {
+            let first = decoded.first();
+            let (width, height) =
+                unsafe { fit_to_monitor(hwnd, first.image.width(), first.image.height()) };
+            let first_image = first.image.clone();
+            let first_delay = first.delay_ms;
+            let animated = decoded.frames.len() > 1;
+            let preload = if let Ok(mut state) = STATE.lock() {
+                state.image = Some(first_image);
+                state.image_generation = state.image_generation.wrapping_add(1);
+                state.scaled_cache = None;
+                state.animation = decoded.frames;
+                state.animation_index = 0;
                 state.files = images_in_folder(&path);
                 state.current = state
                     .files
                     .iter()
                     .position(|item| same_path(item, &path))
                     .unwrap_or(0);
+                state.overlay_name = display_name(&path);
+                state.thumbnails = None;
+                state.thumbnail_cache = None;
+                state.thumbnail_generation = state.thumbnail_generation.wrapping_add(1);
+                Some((
+                    state.files.clone(),
+                    state.current,
+                    state.thumbnail_generation,
+                ))
+            } else {
+                None
+            };
+            if let Some((files, current, generation)) = preload {
+                preload_thumbnails(hwnd, files, current, generation);
             }
-            unsafe { render(hwnd) };
+            unsafe {
+                resize_around_center(hwnd, width, height);
+                announce_file(hwnd, &path);
+                render(hwnd);
+                schedule_animation(hwnd, animated, first_delay);
+            }
         }
         Err(error) => eprintln!("Could not open {}: {error}", path.display()),
     }
 }
 
-fn cycle_image(hwnd: HWND, direction: isize) {
+unsafe fn resize_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    let x = (lparam.0 as u16) as i16 as i32;
+    let y = ((lparam.0 >> 16) as u16) as i16 as i32;
+    let mut bounds = RECT::default();
+    if GetWindowRect(hwnd, &mut bounds).is_err() {
+        return LRESULT(HTCAPTION as isize);
+    }
+    let left = x < bounds.left + RESIZE_BORDER;
+    let right = x >= bounds.right - RESIZE_BORDER;
+    let top = y < bounds.top + RESIZE_BORDER;
+    let bottom = y >= bounds.bottom - RESIZE_BORDER;
+    let hit = match (left, right, top, bottom) {
+        (true, _, true, _) => HTTOPLEFT,
+        (_, true, true, _) => HTTOPRIGHT,
+        (true, _, _, true) => HTBOTTOMLEFT,
+        (_, true, _, true) => HTBOTTOMRIGHT,
+        (true, _, _, _) => HTLEFT,
+        (_, true, _, _) => HTRIGHT,
+        (_, _, true, _) => HTTOP,
+        (_, _, _, true) => HTBOTTOM,
+        _ => HTCAPTION,
+    };
+    LRESULT(hit as isize)
+}
+
+unsafe fn show_shortcuts(hwnd: HWND) {
+    let _ = MessageBoxW(
+        hwnd,
+        w!("Drop image: Open\nMouse wheel / Space / Backspace: Browse\nHome / End: First / last\nHold Shift: Thumbnail browser\nDrag: Move window\nEdges and corners: Resize\nCtrl + resize: Freeform stretch\nB: Cycle background\nF7: Desktop transparency\nF8: Always on top\nF1: Show this help\nEscape: Close"),
+        w!("Impression Eyes Reborne shortcuts"),
+        MB_OK,
+    );
+}
+
+fn show_thumbnail_overlay(hwnd: HWND) {
+    let activated = if let Ok(mut state) = STATE.lock() {
+        if state.thumbnails.is_some() {
+            return;
+        }
+        state.thumbnails = state.thumbnail_cache.clone();
+        state.thumbnails.is_some()
+    } else {
+        false
+    };
+    if activated {
+        unsafe { render(hwnd) };
+    }
+}
+
+fn preload_thumbnails(hwnd: HWND, files: Vec<PathBuf>, current: usize, generation: u64) {
+    let hwnd_value = hwnd.0 as isize;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let still_current = STATE
+            .lock()
+            .map(|state| state.thumbnail_generation == generation)
+            .unwrap_or(false);
+        if !still_current {
+            return;
+        }
+        let overlay = ThumbnailOverlay::build(&files, current);
+        let accepted = STATE
+            .lock()
+            .map(|mut state| {
+                if state.thumbnail_generation != generation {
+                    return false;
+                }
+                state.thumbnail_cache = overlay;
+                true
+            })
+            .unwrap_or(false);
+        if accepted {
+            unsafe {
+                let hwnd = HWND(hwnd_value as *mut _);
+                if IsWindow(hwnd).as_bool() {
+                    let _ = PostMessageW(hwnd, WM_THUMBNAILS_READY, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
+    });
+}
+
+fn hover_thumbnail(hwnd: HWND, lparam: LPARAM) {
+    let x = (lparam.0 as u16) as i16 as i32;
+    let y = ((lparam.0 >> 16) as u16) as i16 as i32;
+    let mut bounds = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut bounds) }.is_err() {
+        return;
+    }
+    let changed = STATE
+        .lock()
+        .ok()
+        .and_then(|mut state| {
+            state.thumbnails.as_mut().map(|overlay| {
+                overlay.hover(x, y, bounds.right - bounds.left, bounds.bottom - bounds.top)
+            })
+        })
+        .unwrap_or(false);
+    if changed {
+        unsafe { render(hwnd) };
+    }
+}
+
+fn commit_thumbnail_overlay(hwnd: HWND) {
+    let selection = STATE.lock().ok().map(|mut state| {
+        let selected = state
+            .thumbnails
+            .as_ref()
+            .and_then(ThumbnailOverlay::selected_path);
+        let current = state.files.get(state.current).cloned();
+        state.thumbnails = None;
+        (selected, current)
+    });
+    match selection {
+        Some((Some(selected), Some(current))) if !same_path(&selected, &current) => {
+            load_image(hwnd, selected);
+        }
+        _ => unsafe { render(hwnd) },
+    }
+}
+
+unsafe fn constrain_aspect_ratio(wparam: WPARAM, lparam: LPARAM) {
+    if GetKeyState(VK_CONTROL.0 as i32) < 0 {
+        return;
+    }
+    let ratio = {
+        let Ok(state) = STATE.lock() else { return };
+        let Some(image) = &state.image else { return };
+        image.width() as f64 / image.height().max(1) as f64
+    };
+    let bounds = &mut *(lparam.0 as *mut RECT);
+    let width = (bounds.right - bounds.left).max(1);
+    let height = (bounds.bottom - bounds.top).max(1);
+    let adjust_height = matches!(
+        wparam.0 as u32,
+        WMSZ_LEFT | WMSZ_RIGHT | WMSZ_TOPLEFT | WMSZ_TOPRIGHT | WMSZ_BOTTOMLEFT | WMSZ_BOTTOMRIGHT
+    );
+    if adjust_height {
+        let new_height = (width as f64 / ratio).round() as i32;
+        if matches!(wparam.0 as u32, WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT) {
+            bounds.top = bounds.bottom - new_height;
+        } else {
+            bounds.bottom = bounds.top + new_height;
+        }
+    } else {
+        let new_width = (height as f64 * ratio).round() as i32;
+        if wparam.0 as u32 == WMSZ_LEFT {
+            bounds.left = bounds.right - new_width;
+        } else {
+            bounds.right = bounds.left + new_width;
+        }
+    }
+}
+
+enum Selection {
+    First,
+    Last,
+    Relative(isize),
+}
+
+fn select_image(hwnd: HWND, selection: Selection) {
     let path = {
         let Ok(mut state) = STATE.lock() else { return };
         if state.files.len() < 2 {
             return;
         }
-        let count = state.files.len() as isize;
-        state.current = (state.current as isize + direction).rem_euclid(count) as usize;
+        state.current = match selection {
+            Selection::First => 0,
+            Selection::Last => state.files.len() - 1,
+            Selection::Relative(direction) => {
+                let count = state.files.len() as isize;
+                (state.current as isize + direction).rem_euclid(count) as usize
+            }
+        };
         state.files[state.current].clone()
     };
 
     // Keep the existing folder ordering while replacing only the decoded image.
-    match image::open(&path) {
-        Ok(image) => {
-            if let Ok(mut state) = STATE.lock() {
-                state.image = Some(image.to_rgba8());
+    unsafe {
+        let _ = KillTimer(hwnd, ANIMATION_TIMER);
+    }
+    match decoder::load_animated(&path) {
+        Ok(decoded) => {
+            let first = decoded.first();
+            let (width, height) =
+                unsafe { fit_to_monitor(hwnd, first.image.width(), first.image.height()) };
+            let first_image = first.image.clone();
+            let first_delay = first.delay_ms;
+            let animated = decoded.frames.len() > 1;
+            let preload = if let Ok(mut state) = STATE.lock() {
+                state.image = Some(first_image);
+                state.image_generation = state.image_generation.wrapping_add(1);
+                state.scaled_cache = None;
+                state.animation = decoded.frames;
+                state.animation_index = 0;
+                state.overlay_name = display_name(&path);
+                state.thumbnails = None;
+                let needs_refresh = state
+                    .thumbnail_cache
+                    .as_ref()
+                    .map(|cache| !cache.contains_path(&path))
+                    .unwrap_or(true);
+                if needs_refresh {
+                    state.thumbnail_generation = state.thumbnail_generation.wrapping_add(1);
+                    Some((
+                        state.files.clone(),
+                        state.current,
+                        state.thumbnail_generation,
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if let Some((files, current, generation)) = preload {
+                preload_thumbnails(hwnd, files, current, generation);
             }
-            unsafe { render(hwnd) };
+            unsafe {
+                resize_around_center(hwnd, width, height);
+                announce_file(hwnd, &path);
+                render(hwnd);
+                schedule_animation(hwnd, animated, first_delay);
+            }
         }
         Err(error) => eprintln!("Could not open {}: {error}", path.display()),
     }
 }
 
-fn images_in_folder(path: &Path) -> Vec<PathBuf> {
-    let Some(folder) = path.parent() else {
-        return vec![path.to_path_buf()];
-    };
-    let Ok(entries) = fs::read_dir(folder) else {
-        return vec![path.to_path_buf()];
-    };
-    let mut files: Vec<_> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|candidate| candidate.is_file() && is_supported_image(candidate))
-        .collect();
-    files.sort_by(|left, right| {
-        left.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_lowercase()
-            .cmp(
-                &right
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_lowercase(),
-            )
-    });
-    if files.is_empty() {
-        vec![path.to_path_buf()]
-    } else {
-        files
+unsafe fn resize_around_center(hwnd: HWND, width: i32, height: i32) {
+    let mut current = RECT::default();
+    if GetWindowRect(hwnd, &mut current).is_err() {
+        let _ = SetWindowPos(hwnd, None, 0, 0, width, height, SWP_NOMOVE);
+        return;
+    }
+    let center_x = current.left + (current.right - current.left) / 2;
+    let center_y = current.top + (current.bottom - current.top) / 2;
+    let x = center_x - width / 2;
+    let y = center_y - height / 2;
+    let _ = SetWindowPos(hwnd, None, x, y, width, height, Default::default());
+}
+
+fn display_name(path: &Path) -> Option<String> {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+unsafe fn schedule_animation(hwnd: HWND, animated: bool, delay_ms: u32) {
+    let _ = KillTimer(hwnd, ANIMATION_TIMER);
+    if animated {
+        SetTimer(hwnd, ANIMATION_TIMER, delay_ms, None);
     }
 }
 
-fn is_supported_image(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
-        Some("bmp" | "gif" | "ico" | "jpg" | "jpeg" | "png" | "tif" | "tiff" | "webp")
+fn advance_animation(hwnd: HWND) {
+    let next_delay = STATE.lock().ok().and_then(|mut state| {
+        if state.animation.len() < 2 {
+            return None;
+        }
+        state.animation_index = (state.animation_index + 1) % state.animation.len();
+        let frame = &state.animation[state.animation_index];
+        let image = frame.image.clone();
+        let delay = frame.delay_ms;
+        state.image = Some(image);
+        state.image_generation = state.image_generation.wrapping_add(1);
+        state.scaled_cache = None;
+        Some(delay)
+    });
+    if let Some(delay) = next_delay {
+        unsafe {
+            render(hwnd);
+            schedule_animation(hwnd, true, delay);
+        }
+    }
+}
+
+unsafe fn announce_file(hwnd: HWND, path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+
+    let title = format!(
+        "{} — Impression Eyes Reborne",
+        display_name(path).unwrap_or_else(|| "Image".to_string())
+    );
+    let mut title_wide: Vec<u16> = std::ffi::OsStr::new(&title).encode_wide().collect();
+    title_wide.push(0);
+    let _ = SetWindowTextW(hwnd, PCWSTR(title_wide.as_ptr()));
+    let _ = KillTimer(hwnd, NAME_TIMER);
+    SetTimer(hwnd, NAME_TIMER, 1800, None);
+}
+
+unsafe fn fit_to_monitor(hwnd: HWND, image_width: u32, image_height: u32) -> (i32, i32) {
+    let native_width = image_width.min(i32::MAX as u32).max(1) as i32;
+    let native_height = image_height.min(i32::MAX as u32).max(1) as i32;
+    let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+        return (native_width, native_height);
+    }
+    let available_width = (info.rcWork.right - info.rcWork.left).max(1);
+    let available_height = (info.rcWork.bottom - info.rcWork.top).max(1);
+    let scale = (available_width as f64 / native_width as f64)
+        .min(available_height as f64 / native_height as f64)
+        .min(1.0);
+    (
+        (native_width as f64 * scale).round().max(1.0) as i32,
+        (native_height as f64 * scale).round().max(1.0) as i32,
     )
 }
 
-fn same_path(left: &Path, right: &Path) -> bool {
-    left.to_string_lossy()
-        .eq_ignore_ascii_case(&right.to_string_lossy())
-}
-
 unsafe fn render(hwnd: HWND) {
-    let Ok(state) = STATE.lock() else { return };
-    let (width, height, mut pixels) = match &state.image {
-        Some(image) => (
-            image.width() as i32,
-            image.height() as i32,
-            image.clone().into_raw(),
-        ),
+    let (image, generation, transparent, background, overlay_name, thumbnails) = {
+        let Ok(state) = STATE.lock() else { return };
+        (
+            state.image.clone(),
+            state.image_generation,
+            state.transparent,
+            state.background,
+            state.overlay_name.clone(),
+            state.thumbnails.clone(),
+        )
+    };
+    let mut bounds = RECT::default();
+    if GetWindowRect(hwnd, &mut bounds).is_err() {
+        return;
+    }
+    let width = (bounds.right - bounds.left).max(1);
+    let height = (bounds.bottom - bounds.top).max(1);
+    if checked_rgba_len(width, height).is_none() {
+        return;
+    }
+    let show_startup_help = image.is_none();
+    let mut pixels = match image {
+        Some(image) => scaled_image(&image, generation, width, height)
+            .as_raw()
+            .clone(),
         None => {
-            let mut pixels = vec![0u8; (START_WIDTH * START_HEIGHT * 4) as usize];
-            for pixel in pixels.chunks_exact_mut(4) {
-                pixel[3] = 255;
-            }
-            (START_WIDTH, START_HEIGHT, pixels)
+            let Some(pixels) = startup_pixels(width, height) else {
+                return;
+            };
+            pixels
         }
     };
 
+    if let Some(name) = &overlay_name {
+        let label_width = ((name.chars().count() as i32 * 7) + 18).clamp(70, width);
+        let label_left = width - label_width;
+        let bar_height = height.min(24);
+        for y in 0..bar_height {
+            for x in label_left..width {
+                let offset = ((y * width + x) * 4) as usize;
+                pixels[offset] = (pixels[offset] as u16 * 42 / 100) as u8;
+                pixels[offset + 1] = (pixels[offset + 1] as u16 * 42 / 100) as u8;
+                pixels[offset + 2] = (pixels[offset + 2] as u16 * 42 / 100) as u8;
+                pixels[offset + 3] = 255;
+            }
+        }
+    }
+    if let Some(overlay) = thumbnails {
+        overlay.render(&mut pixels, width, height);
+    }
+
     // DIB sections use BGRA. Layered windows also require premultiplied alpha.
-    for pixel in pixels.chunks_exact_mut(4) {
+    for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+        let source_alpha = pixel[3] as u16;
+        if transparent {
+            pixel[0] = (pixel[0] as u16 * source_alpha / 255) as u8;
+            pixel[1] = (pixel[1] as u16 * source_alpha / 255) as u8;
+            pixel[2] = (pixel[2] as u16 * source_alpha / 255) as u8;
+            pixel[3] = source_alpha as u8;
+        } else {
+            let x = index as i32 % width;
+            let y = index as i32 / width;
+            let background = background_rgb(background, x, y);
+            let inverse = 255 - source_alpha;
+            pixel[0] =
+                ((pixel[0] as u16 * source_alpha + background[0] as u16 * inverse) / 255) as u8;
+            pixel[1] =
+                ((pixel[1] as u16 * source_alpha + background[1] as u16 * inverse) / 255) as u8;
+            pixel[2] =
+                ((pixel[2] as u16 * source_alpha + background[2] as u16 * inverse) / 255) as u8;
+            pixel[3] = 255;
+        }
         pixel.swap(0, 2);
-        let alpha = if state.transparent { pixel[3] } else { 255 } as u16;
-        pixel[0] = (pixel[0] as u16 * alpha / 255) as u8;
-        pixel[1] = (pixel[1] as u16 * alpha / 255) as u8;
-        pixel[2] = (pixel[2] as u16 * alpha / 255) as u8;
-        pixel[3] = alpha as u8;
     }
 
     let screen = HDC::default();
     let memory_dc = CreateCompatibleDC(screen);
-    let mut bitmap_info = BITMAPINFO::default();
-    bitmap_info.bmiHeader = BITMAPINFOHEADER {
-        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-        biWidth: width,
-        biHeight: -height,
-        biPlanes: 1,
-        biBitCount: 32,
-        biCompression: BI_RGB.0,
+    let bitmap_info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut bits = std::ptr::null_mut();
@@ -312,6 +813,11 @@ unsafe fn render(hwnd: HWND) {
     }
     std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast(), pixels.len());
     let old = SelectObject(memory_dc, bitmap);
+    if show_startup_help {
+        draw_startup_helper(memory_dc, width, height);
+    } else if let Some(name) = overlay_name {
+        draw_filename(memory_dc, width, &name);
+    }
     let size = SIZE {
         cx: width,
         cy: height,
@@ -339,6 +845,215 @@ unsafe fn render(hwnd: HWND) {
     let _ = DeleteDC(memory_dc);
 }
 
+fn scaled_image(
+    image: &Arc<RgbaImage>,
+    generation: u64,
+    width: i32,
+    height: i32,
+) -> Arc<RgbaImage> {
+    if let Ok(state) = STATE.lock() {
+        if let Some(cache) = &state.scaled_cache {
+            if cache.generation == generation && cache.width == width && cache.height == height {
+                return cache.image.clone();
+            }
+        }
+    }
+    let scaled = Arc::new(image::imageops::resize(
+        image.as_ref(),
+        width as u32,
+        height as u32,
+        image::imageops::FilterType::Triangle,
+    ));
+    if let Ok(mut state) = STATE.lock() {
+        if state.image_generation == generation {
+            state.scaled_cache = Some(ScaledCache {
+                generation,
+                width,
+                height,
+                image: scaled.clone(),
+            });
+        }
+    }
+    scaled
+}
+
+fn checked_rgba_len(width: i32, height: i32) -> Option<usize> {
+    const MAX_RENDER_BYTES: usize = 256 * 1024 * 1024;
+    let width = usize::try_from(width).ok()?;
+    let height = usize::try_from(height).ok()?;
+    width
+        .checked_mul(height)?
+        .checked_mul(4)
+        .filter(|length| *length <= MAX_RENDER_BYTES)
+}
+
+fn background_rgb(background: Background, x: i32, y: i32) -> [u8; 3] {
+    match background {
+        Background::Black => [0, 0, 0],
+        Background::White => [255, 255, 255],
+        Background::Checkerboard => {
+            if (x / 12 + y / 12) % 2 == 0 {
+                [54, 54, 58]
+            } else {
+                [92, 92, 98]
+            }
+        }
+    }
+}
+
+fn startup_pixels(width: i32, height: i32) -> Option<Vec<u8>> {
+    let mut pixels = vec![0u8; checked_rgba_len(width, height)?];
+    for y in 0..height {
+        let shade = 24 + (y * 8 / height.max(1)) as u8;
+        for x in 0..width {
+            let offset = ((y * width + x) * 4) as usize;
+            pixels[offset] = shade.saturating_sub(2);
+            pixels[offset + 1] = shade;
+            pixels[offset + 2] = shade.saturating_add(4);
+            pixels[offset + 3] = 255;
+        }
+    }
+
+    // A restrained dashed drop-zone outline, inset enough to leave resize handles clear.
+    let left = 28;
+    let top = 28;
+    let right = width - 29;
+    let bottom = height - 29;
+    let border = [72, 82, 96, 255];
+    for x in (left + 14..right - 14).step_by(12) {
+        paint_square(&mut pixels, width, height, x, top, border);
+        paint_square(&mut pixels, width, height, x, bottom, border);
+    }
+    for y in (top + 14..bottom - 14).step_by(12) {
+        paint_square(&mut pixels, width, height, left, y, border);
+        paint_square(&mut pixels, width, height, right, y, border);
+    }
+    Some(pixels)
+}
+
+fn paint_square(pixels: &mut [u8], width: i32, height: i32, x: i32, y: i32, color: [u8; 4]) {
+    for offset_y in 0..2 {
+        for offset_x in 0..2 {
+            let px = x + offset_x;
+            let py = y + offset_y;
+            if px >= 0 && py >= 0 && px < width && py < height {
+                let offset = ((py * width + px) * 4) as usize;
+                pixels[offset..offset + 4].copy_from_slice(&color);
+            }
+        }
+    }
+}
+
+unsafe fn draw_startup_helper(dc: HDC, width: i32, height: i32) {
+    let _ = SetBkMode(dc, TRANSPARENT);
+    let title_font = CreateFontW(
+        -24,
+        0,
+        0,
+        0,
+        600,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET.0 as u32,
+        OUT_DEFAULT_PRECIS.0 as u32,
+        0,
+        CLEARTYPE_QUALITY.0 as u32,
+        (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
+        w!("Segoe UI"),
+    );
+    let body_font = CreateFontW(
+        -15,
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET.0 as u32,
+        OUT_DEFAULT_PRECIS.0 as u32,
+        0,
+        CLEARTYPE_QUALITY.0 as u32,
+        (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
+        w!("Segoe UI"),
+    );
+
+    let old_font = SelectObject(dc, title_font);
+    let _ = SetTextColor(dc, COLORREF(0x00f5f3f0));
+    draw_centered_text(dc, "Drop an image", 74, 116, width);
+
+    let _ = SelectObject(dc, body_font);
+    let _ = SetTextColor(dc, COLORREF(0x00aaa29a));
+    draw_centered_text(dc, "Drag and drop a supported image file", 118, 154, width);
+    let _ = SetTextColor(dc, COLORREF(0x00a78b62));
+    draw_centered_text(
+        dc,
+        "Press F1 to view shortcuts",
+        height - 76,
+        height - 46,
+        width,
+    );
+
+    let _ = SelectObject(dc, old_font);
+    let _ = DeleteObject(title_font);
+    let _ = DeleteObject(body_font);
+}
+
+unsafe fn draw_filename(dc: HDC, width: i32, name: &str) {
+    let font = CreateFontW(
+        -12,
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET.0 as u32,
+        OUT_DEFAULT_PRECIS.0 as u32,
+        0,
+        CLEARTYPE_QUALITY.0 as u32,
+        (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
+        w!("Segoe UI"),
+    );
+    let old_font = SelectObject(dc, font);
+    let _ = SetBkMode(dc, TRANSPARENT);
+    let _ = SetTextColor(dc, COLORREF(0x00eeeae6));
+    let label_width = ((name.chars().count() as i32 * 7) + 18).clamp(70, width);
+    let mut encoded: Vec<u16> = name.encode_utf16().collect();
+    let mut bounds = RECT {
+        left: width - label_width + 6,
+        top: 0,
+        right: width - 7,
+        bottom: 23,
+    };
+    DrawTextW(
+        dc,
+        &mut encoded,
+        &mut bounds,
+        DT_RIGHT | DT_SINGLELINE | DT_VCENTER,
+    );
+    let _ = SelectObject(dc, old_font);
+    let _ = DeleteObject(font);
+}
+
+unsafe fn draw_centered_text(dc: HDC, text: &str, top: i32, bottom: i32, width: i32) {
+    let mut encoded: Vec<u16> = text.encode_utf16().collect();
+    let mut bounds = RECT {
+        left: 40,
+        top,
+        right: width - 40,
+        bottom,
+    };
+    DrawTextW(
+        dc,
+        &mut encoded,
+        &mut bounds,
+        DT_CENTER | DT_VCENTER | DT_WORDBREAK,
+    );
+}
+
 trait OsStringExt {
     fn from_wide(wide: &[u16]) -> OsString;
 }
@@ -347,5 +1062,18 @@ impl OsStringExt for OsString {
     fn from_wide(wide: &[u16]) -> OsString {
         use std::os::windows::ffi::OsStringExt as WindowsOsStringExt;
         WindowsOsStringExt::from_wide(wide)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_rgba_len;
+
+    #[test]
+    fn render_buffer_size_rejects_invalid_or_excessive_dimensions() {
+        assert_eq!(checked_rgba_len(-1, 100), None);
+        assert_eq!(checked_rgba_len(100, 0), Some(0));
+        assert_eq!(checked_rgba_len(100, 100), Some(40_000));
+        assert_eq!(checked_rgba_len(i32::MAX, i32::MAX), None);
     }
 }

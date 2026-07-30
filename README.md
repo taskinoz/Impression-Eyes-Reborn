@@ -19,16 +19,40 @@ The first Windows prototype implements the core overlay workflow:
 
 - a tiny, borderless native Win32 window;
 - images opened from the command line or dropped onto the window;
-- native-size BMP, GIF, ICO, JPEG, PNG, TIFF, and WebP decoding;
+- native-size BMP, DDS, Farbfeld, GIF, ICO, JPEG, PNG, PNM, QOI, TGA, TIFF,
+  and WebP decoding;
+- timed animated GIF and animated WebP playback;
 - per-pixel image transparency toggled with `F7`;
 - always-on-top mode toggled with `F8`;
 - click-and-drag movement from anywhere on the image; and
+- edge/corner resizing with smooth image scaling;
 - mouse-wheel navigation through images in the loaded file's folder; and
 - `Escape` or `Alt+F4` to close the active viewer.
 
-Animated images currently display their first frame. Startup presentation,
-multi-frame animation, context actions, and any additional legacy shortcuts are
-still to be documented and implemented.
+Folder navigation follows Explorer-style natural filename ordering (`image2`
+before `image10`). `Home` selects the first image, `End` the last, `Space` the
+next, and `Backspace` the previous; wheel and relative-key navigation wrap at
+folder boundaries.
+
+The empty startup window shows the drop target and advertises `F1`. Press `F1`
+at any time to display the complete shortcut reference.
+
+On launch, the viewer is centered in the usable area of the monitor containing
+the previously focused window. After launch, moving or navigating the viewer
+does not reset the position.
+
+Images keep their aspect ratio during normal resizing; hold `Ctrl` while
+resizing for freeform stretching. Hold `Shift` to open a centered thumbnail
+grid, hover an image to enlarge/select it, and release `Shift` to load it.
+Changing images restores that image's native
+dimensions unless it exceeds the active monitor's usable area, in which case it
+is scaled down proportionally. The filename is displayed briefly. Press `B` to
+cycle black, white, and checkerboard transparency backgrounds, or `F7` for true
+desktop transparency.
+
+Animation frame timing is bounded to a safe minimum and decoded frame memory is
+limited. Context actions and additional legacy shortcuts remain to be
+implemented.
 
 ## Building
 
@@ -38,12 +62,11 @@ Install the Rust toolchain, then run:
 cargo build --release
 ```
 
-The executable is written to
-`target\release\impression-eyes-reborne.exe`. It can be launched empty for a
+The executable is written to `target\release\ime-reborn.exe`. It can be launched empty for a
 drop target or with an image path:
 
 ```powershell
-.\target\release\impression-eyes-reborne.exe .\picture.png
+.\target\release\ime-reborn.exe .\picture.png
 ```
 
 ## History

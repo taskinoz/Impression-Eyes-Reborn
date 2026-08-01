@@ -44,18 +44,24 @@ pub fn load_animated(path: &Path) -> ImageResult<DecodedImage> {
         Some(ImageFormat::WebP) => {
             let mut decoder = WebPDecoder::new(BufReader::new(File::open(path)?))?;
             decoder.set_limits(decoder_limits())?;
-            collect_frames(decoder.into_frames())
+            if decoder.has_animation() {
+                collect_frames(decoder.into_frames())
+            } else {
+                load_static(path)
+            }
         }
-        _ => {
-            let image = load(path)?.to_rgba8();
-            Ok(DecodedImage {
-                frames: vec![DecodedFrame {
-                    image: Arc::new(image),
-                    delay_ms: DEFAULT_FRAME_DELAY_MS,
-                }],
-            })
-        }
+        _ => load_static(path),
     }
+}
+
+fn load_static(path: &Path) -> ImageResult<DecodedImage> {
+    let image = load(path)?.to_rgba8();
+    Ok(DecodedImage {
+        frames: vec![DecodedFrame {
+            image: Arc::new(image),
+            delay_ms: DEFAULT_FRAME_DELAY_MS,
+        }],
+    })
 }
 
 fn collect_frames(frames: image::Frames<'_>) -> ImageResult<DecodedImage> {
@@ -104,7 +110,10 @@ fn decoder_limits() -> image::io::Limits {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{codecs::gif::GifEncoder, Delay, Frame};
+    use image::{
+        codecs::{gif::GifEncoder, webp::WebPEncoder},
+        ColorType, Delay, Frame, ImageEncoder,
+    };
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -141,5 +150,25 @@ mod tests {
         assert_eq!(decoded.frames.len(), 2);
         assert_eq!(decoded.frames[0].delay_ms, 40);
         assert_eq!(decoded.frames[1].delay_ms, 80);
+    }
+
+    #[test]
+    fn static_webp_uses_the_still_image_path() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ime-reborn-{unique}.webp"));
+        let pixels = RgbaImage::from_pixel(3, 2, image::Rgba([12, 34, 56, 255]));
+        let file = File::create(&path).expect("create WebP fixture");
+        WebPEncoder::new_lossless(file)
+            .write_image(pixels.as_raw(), 3, 2, ColorType::Rgba8)
+            .expect("encode static WebP");
+
+        let decoded = load_animated(&path).expect("decode static WebP");
+        fs::remove_file(&path).expect("remove WebP fixture");
+        assert_eq!(decoded.frames.len(), 1);
+        assert_eq!(decoded.first().image.dimensions(), (3, 2));
+        assert_eq!(decoded.first().image.get_pixel(0, 0).0, [12, 34, 56, 255]);
     }
 }

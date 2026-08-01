@@ -53,6 +53,19 @@ pub struct ThumbnailOverlay {
 }
 
 impl ThumbnailOverlay {
+    pub fn preserving_hover(mut self, previous: &Self) -> Self {
+        let hovered_path = previous
+            .hovered
+            .and_then(|index| previous.items.get(index))
+            .map(|item| &item.path);
+        self.hovered = hovered_path.and_then(|path| {
+            self.items
+                .iter()
+                .position(|item| item.path.as_path() == path.as_path())
+        });
+        self
+    }
+
     pub fn build_progressive(
         files: &[PathBuf],
         current: usize,
@@ -292,5 +305,24 @@ mod tests {
             hovered: None,
         };
         assert_eq!(overlay.selected_path(), None);
+    }
+
+    #[test]
+    fn progressive_refresh_preserves_hovered_path() {
+        let old = ThumbnailOverlay {
+            items: Arc::new(vec![ThumbnailItem {
+                path: PathBuf::from("selected.png"),
+                image: Arc::new(RgbaImage::new(1, 1)),
+                original_width: 1,
+                original_height: 1,
+                loaded: false,
+            }]),
+            hovered: Some(0),
+        };
+        let refreshed = old.clone().preserving_hover(&old);
+        assert_eq!(
+            refreshed.selected_path(),
+            Some(PathBuf::from("selected.png"))
+        );
     }
 }

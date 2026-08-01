@@ -501,7 +501,12 @@ unsafe fn show_shortcuts(hwnd: HWND) {
 
 fn show_thumbnail_overlay(hwnd: HWND) {
     let activated = if let Ok(mut state) = STATE.lock() {
-        state.thumbnails = state.thumbnail_cache.clone();
+        let refreshed = match (state.thumbnail_cache.clone(), state.thumbnails.as_ref()) {
+            (Some(cache), Some(previous)) => Some(cache.preserving_hover(previous)),
+            (cache, None) => cache,
+            (None, Some(_)) => state.thumbnails.clone(),
+        };
+        state.thumbnails = refreshed;
         state.thumbnails.is_some()
     } else {
         false
@@ -521,6 +526,9 @@ fn preload_thumbnails(hwnd: HWND, files: Vec<PathBuf>, current: usize, generatio
         if !still_current {
             return;
         }
+        let mut last_notification = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(50))
+            .unwrap_or_else(std::time::Instant::now);
         let publish = |overlay: ThumbnailOverlay| {
             let accepted = STATE
                 .lock()
@@ -532,17 +540,30 @@ fn preload_thumbnails(hwnd: HWND, files: Vec<PathBuf>, current: usize, generatio
                     true
                 })
                 .unwrap_or(false);
-            if accepted {
+            if accepted && last_notification.elapsed() >= std::time::Duration::from_millis(50) {
                 unsafe {
                     let hwnd = HWND(hwnd_value as *mut _);
                     if IsWindow(hwnd).as_bool() {
                         let _ = PostMessageW(hwnd, WM_THUMBNAILS_READY, WPARAM(0), LPARAM(0));
                     }
                 }
+                last_notification = std::time::Instant::now();
             }
             accepted
         };
         let _ = ThumbnailOverlay::build_progressive(&files, current, publish);
+        let still_current = STATE
+            .lock()
+            .map(|state| state.thumbnail_generation == generation)
+            .unwrap_or(false);
+        if still_current {
+            unsafe {
+                let hwnd = HWND(hwnd_value as *mut _);
+                if IsWindow(hwnd).as_bool() {
+                    let _ = PostMessageW(hwnd, WM_THUMBNAILS_READY, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
     });
 }
 

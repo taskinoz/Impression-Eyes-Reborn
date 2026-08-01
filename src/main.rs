@@ -58,6 +58,7 @@ const KEY_SPACE: usize = 0x20;
 const KEY_BACKSPACE: usize = 0x08;
 const KEY_F1: usize = 0x70;
 const KEY_B: usize = 0x42;
+const KEY_R: usize = 0x52;
 const KEY_SHIFT: usize = 0x10;
 const KEY_ZERO: usize = 0x30;
 const KEY_PLUS: usize = 0xbb;
@@ -116,6 +117,9 @@ struct AppState {
     base_width: i32,
     base_height: i32,
     zoom_render_pending: bool,
+    rotation_quarters: u8,
+    original_width: u32,
+    original_height: u32,
 }
 
 struct ScaledCache {
@@ -123,6 +127,7 @@ struct ScaledCache {
     width: i32,
     height: i32,
     zoom_milli: u32,
+    rotation_quarters: u8,
     image: Arc<RgbaImage>,
 }
 
@@ -152,6 +157,9 @@ static STATE: Mutex<AppState> = Mutex::new(AppState {
     base_width: START_WIDTH,
     base_height: START_HEIGHT,
     zoom_render_pending: false,
+    rotation_quarters: 0,
+    original_width: START_WIDTH as u32,
+    original_height: START_HEIGHT as u32,
 });
 
 fn main() -> windows::core::Result<()> {
@@ -278,6 +286,10 @@ unsafe extern "system" fn window_proc(
                 state.background = state.background.next();
             }
             render(hwnd);
+            LRESULT(0)
+        }
+        WM_KEYDOWN if wparam.0 == KEY_R => {
+            rotate_image(hwnd, GetKeyState(VK_CONTROL.0 as i32) < 0);
             LRESULT(0)
         }
         WM_KEYDOWN if wparam.0 == KEY_SHIFT => {
@@ -424,12 +436,15 @@ fn load_image(hwnd: HWND, path: PathBuf) {
         state.animation.clear();
         state.animation_index = 0;
         state.zoom = 1.0;
+        state.rotation_quarters = 0;
         state.files = files;
         state.current = current;
         state.overlay_name = display_name(&path);
         state.thumbnails = None;
         if let Some(preview) = &preview {
             state.image = Some(preview.image.clone());
+            state.original_width = preview.original_width;
+            state.original_height = preview.original_height;
             state.image_generation = state.image_generation.wrapping_add(1);
             state.scaled_cache = None;
         }
@@ -493,7 +508,7 @@ unsafe fn resize_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 unsafe fn show_shortcuts(hwnd: HWND) {
     let _ = MessageBoxW(
         hwnd,
-        w!("Drop image: Open\nMouse wheel / Space / Backspace: Browse\nCtrl + mouse wheel or +/-: Zoom\n0: Reset zoom\nHome / End: First / last\nHold Shift: Thumbnail browser\nDrag: Move window\nEdges and corners: Resize\nCtrl + resize: Freeform stretch\nB: Cycle background\nF7: Desktop transparency\nF8: Always on top\nF1: Show this help\nEscape: Close"),
+        w!("Drop image: Open\nMouse wheel / Space / Backspace: Browse\nCtrl + mouse wheel or +/-: Zoom\n0: Reset zoom\nR: Rotate clockwise\nCtrl+R: Rotate counter-clockwise\nHome / End: First / last\nHold Shift: Thumbnail browser\nDrag: Move window\nEdges and corners: Resize\nCtrl + resize: Freeform stretch\nB: Cycle background\nF7: Desktop transparency\nF8: Always on top\nF1: Show this help\nEscape: Close"),
         w!("Impression Eyes Reborne shortcuts"),
         MB_OK,
     );
@@ -654,6 +669,48 @@ fn reset_zoom(hwnd: HWND) {
     set_zoom(hwnd, 1.0);
 }
 
+fn rotate_image(hwnd: HWND, counter_clockwise: bool) {
+    let rotation = STATE.lock().ok().and_then(|mut state| {
+        state.image.as_ref()?;
+        let step = if counter_clockwise { 3 } else { 1 };
+        state.rotation_quarters = (state.rotation_quarters + step) % 4;
+        state.zoom = 1.0;
+        state.scaled_cache = None;
+        state.overlay_name = state
+            .files
+            .get(state.current)
+            .and_then(|path| display_name(path));
+        let (width, height) = oriented_dimensions(
+            state.original_width,
+            state.original_height,
+            state.rotation_quarters,
+        );
+        Some((width, height))
+    });
+    let Some((image_width, image_height)) = rotation else {
+        return;
+    };
+    unsafe {
+        let (width, height) = fit_to_monitor(hwnd, image_width, image_height);
+        if let Ok(mut state) = STATE.lock() {
+            state.base_width = width;
+            state.base_height = height;
+        }
+        resize_around_center(hwnd, width, height);
+        let _ = KillTimer(hwnd, NAME_TIMER);
+        SetTimer(hwnd, NAME_TIMER, 1800, None);
+        render(hwnd);
+    }
+}
+
+fn oriented_dimensions(width: u32, height: u32, rotation_quarters: u8) -> (u32, u32) {
+    if rotation_quarters % 2 == 0 {
+        (width, height)
+    } else {
+        (height, width)
+    }
+}
+
 fn set_zoom(hwnd: HWND, requested: f64) {
     let zoom = requested.clamp(0.1, 8.0);
     let should_schedule = STATE.lock().ok().and_then(|mut state| {
@@ -699,6 +756,7 @@ fn select_image(hwnd: HWND, selection: Selection) {
         state.animation.clear();
         state.animation_index = 0;
         state.zoom = 1.0;
+        state.rotation_quarters = 0;
         state.overlay_name = display_name(&path);
         state.thumbnails = None;
         let preview = state
@@ -707,6 +765,8 @@ fn select_image(hwnd: HWND, selection: Selection) {
             .and_then(|cache| cache.preview_for_path(&path));
         if let Some(preview) = &preview {
             state.image = Some(preview.image.clone());
+            state.original_width = preview.original_width;
+            state.original_height = preview.original_height;
             state.image_generation = state.image_generation.wrapping_add(1);
             state.scaled_cache = None;
         }
@@ -801,12 +861,17 @@ fn apply_pending_image(hwnd: HWND) {
         let image_height = first_image.height();
         let first_delay = pending.decoded.first().delay_ms;
         let animated = pending.decoded.frames.len() > 1;
-        let (base_width, base_height) = unsafe { fit_to_monitor(hwnd, image_width, image_height) };
+        let (oriented_width, oriented_height) =
+            oriented_dimensions(image_width, image_height, state.rotation_quarters);
+        let (base_width, base_height) =
+            unsafe { fit_to_monitor(hwnd, oriented_width, oriented_height) };
         state.image = Some(first_image);
         state.image_generation = state.image_generation.wrapping_add(1);
         state.scaled_cache = None;
         state.animation = pending.decoded.frames;
         state.animation_index = 0;
+        state.original_width = image_width;
+        state.original_height = image_height;
         state.base_width = base_width;
         state.base_height = base_height;
         Some((animated, first_delay, base_width, base_height))
@@ -904,7 +969,16 @@ unsafe fn fit_to_monitor(hwnd: HWND, image_width: u32, image_height: u32) -> (i3
 }
 
 unsafe fn render(hwnd: HWND) {
-    let (image, generation, transparent, background, overlay_name, zoom, thumbnails) = {
+    let (
+        image,
+        generation,
+        transparent,
+        background,
+        overlay_name,
+        zoom,
+        rotation_quarters,
+        thumbnails,
+    ) = {
         let Ok(state) = STATE.lock() else { return };
         (
             state.image.clone(),
@@ -913,6 +987,7 @@ unsafe fn render(hwnd: HWND) {
             state.background,
             state.overlay_name.clone(),
             state.zoom,
+            state.rotation_quarters,
             state.thumbnails.clone(),
         )
     };
@@ -927,7 +1002,7 @@ unsafe fn render(hwnd: HWND) {
     }
     let show_startup_help = image.is_none();
     let mut pixels = match image {
-        Some(image) => scaled_image(&image, generation, width, height, zoom)
+        Some(image) => scaled_image(&image, generation, width, height, zoom, rotation_quarters)
             .as_raw()
             .clone(),
         None => {
@@ -1044,6 +1119,7 @@ fn scaled_image(
     width: i32,
     height: i32,
     zoom: f64,
+    rotation_quarters: u8,
 ) -> Arc<RgbaImage> {
     let zoom_milli = (zoom * 1000.0).round() as u32;
     if let Ok(state) = STATE.lock() {
@@ -1052,13 +1128,22 @@ fn scaled_image(
                 && cache.width == width
                 && cache.height == height
                 && cache.zoom_milli == zoom_milli
+                && cache.rotation_quarters == rotation_quarters
             {
                 return cache.image.clone();
             }
         }
     }
+    let rotated = match rotation_quarters % 4 {
+        0 => None,
+        1 => Some(image::imageops::rotate90(image.as_ref())),
+        2 => Some(image::imageops::rotate180(image.as_ref())),
+        3 => Some(image::imageops::rotate270(image.as_ref())),
+        _ => unreachable!(),
+    };
+    let source = rotated.as_ref().unwrap_or(image.as_ref());
     let scaled = Arc::new(scale_into_viewport(
-        image,
+        source,
         width as u32,
         height as u32,
         zoom,
@@ -1070,6 +1155,7 @@ fn scaled_image(
                 width,
                 height,
                 zoom_milli,
+                rotation_quarters,
                 image: scaled.clone(),
             });
         }
@@ -1319,7 +1405,7 @@ impl OsStringExt for OsString {
 
 #[cfg(test)]
 mod tests {
-    use super::{checked_rgba_len, scale_into_viewport};
+    use super::{checked_rgba_len, oriented_dimensions, scale_into_viewport};
     use image::{Rgba, RgbaImage};
 
     #[test]
@@ -1346,5 +1432,13 @@ mod tests {
         let viewport = scale_into_viewport(&image, 4, 4, 2.0);
         assert_eq!(viewport.dimensions(), (4, 4));
         assert!(viewport.pixels().all(|pixel| pixel[3] == 255));
+    }
+
+    #[test]
+    fn quarter_turns_swap_display_dimensions() {
+        assert_eq!(oriented_dimensions(1920, 1080, 0), (1920, 1080));
+        assert_eq!(oriented_dimensions(1920, 1080, 1), (1080, 1920));
+        assert_eq!(oriented_dimensions(1920, 1080, 2), (1920, 1080));
+        assert_eq!(oriented_dimensions(1920, 1080, 3), (1080, 1920));
     }
 }

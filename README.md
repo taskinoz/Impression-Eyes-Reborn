@@ -29,6 +29,7 @@ The first Windows prototype implements the core overlay workflow:
 - mouse-wheel navigation through images in the loaded file's folder;
 - zoom from 10% to 800% with `Ctrl` + mouse wheel or `+` / `-`, with `0`
   restoring the fitted 100% view without changing the window size; and
+- clockwise rotation with `R` and counter-clockwise rotation with `Ctrl+R`;
 - `Escape` or `Alt+F4` to close the active viewer.
 
 Folder navigation follows Explorer-style natural filename ordering (`image2`
@@ -42,6 +43,10 @@ at any time to display the complete shortcut reference.
 The temporary filename label also shows the current zoom percentage. Zooming
 scales and centre-crops the image inside the existing viewport. It resets to
 the fitted 100% view when moving to another image.
+
+Rotation happens around the viewer centre and refits the rotated dimensions to
+the active monitor. The thumbnail selector remains upright and is never
+rotated with the main image.
 
 On launch, the viewer is centered in the usable area of the monitor containing
 the previously focused window. After launch, moving or navigating the viewer

@@ -31,11 +31,13 @@ impl Rect {
     }
 }
 
+#[derive(Clone)]
 pub struct ThumbnailItem {
     path: PathBuf,
     image: Arc<RgbaImage>,
     original_width: u32,
     original_height: u32,
+    loaded: bool,
 }
 
 pub struct ImagePreview {
@@ -51,35 +53,61 @@ pub struct ThumbnailOverlay {
 }
 
 impl ThumbnailOverlay {
-    pub fn build(files: &[PathBuf], current: usize) -> Option<Self> {
+    pub fn build_progressive(
+        files: &[PathBuf],
+        current: usize,
+        mut publish: impl FnMut(Self) -> bool,
+    ) -> Option<Self> {
         if files.is_empty() {
             return None;
         }
         let start = centered_window_start(files.len(), current, MAX_ITEMS);
         let end = (start + MAX_ITEMS).min(files.len());
-        let items: Vec<_> = files[start..end]
+        let mut items: Vec<_> = files[start..end]
             .iter()
-            .filter_map(|path| {
-                decoder::load(path).ok().map(|image| {
-                    let original_width = image.width();
-                    let original_height = image.height();
-                    ThumbnailItem {
-                        path: path.clone(),
-                        image: Arc::new(image.thumbnail(160, 160).to_rgba8()),
-                        original_width,
-                        original_height,
-                    }
-                })
+            .map(|path| ThumbnailItem {
+                path: path.clone(),
+                image: Arc::new(RgbaImage::new(1, 1)),
+                original_width: 1,
+                original_height: 1,
+                loaded: false,
             })
             .collect();
-        if items.is_empty() {
-            None
-        } else {
-            Some(Self {
-                items: Arc::new(items),
-                hovered: None,
-            })
+        let initial = Self {
+            items: Arc::new(items.clone()),
+            hovered: None,
+        };
+        if !publish(initial) {
+            return None;
         }
+
+        // Small files generally decode fastest. Publishing those first makes
+        // the selector useful while unusually large neighbours are still
+        // being decoded.
+        let mut decode_order: Vec<usize> = (0..items.len()).collect();
+        decode_order.sort_by_key(|index| {
+            std::fs::metadata(&items[*index].path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(u64::MAX)
+        });
+        for index in decode_order {
+            if let Ok(image) = decoder::load(&items[index].path) {
+                items[index].original_width = image.width();
+                items[index].original_height = image.height();
+                items[index].image = Arc::new(image.thumbnail(160, 160).to_rgba8());
+                items[index].loaded = true;
+                if !publish(Self {
+                    items: Arc::new(items.clone()),
+                    hovered: None,
+                }) {
+                    return None;
+                }
+            }
+        }
+        Some(Self {
+            items: Arc::new(items),
+            hovered: None,
+        })
     }
 
     pub fn hover(&mut self, x: i32, y: i32, width: i32, height: i32) -> bool {
@@ -98,6 +126,7 @@ impl ThumbnailOverlay {
         self.items
             .iter()
             .find(|item| &item.path == path)
+            .filter(|item| item.loaded)
             .map(|item| ImagePreview {
                 image: item.image.clone(),
                 original_width: item.original_width,
@@ -120,6 +149,9 @@ impl ThumbnailOverlay {
             .zip(layout(self.items.len(), width, height))
             .enumerate()
         {
+            if !item.loaded {
+                continue;
+            }
             let hovered = self.hovered == Some(index);
             let target = if hovered { rect.grow(8) } else { rect };
             draw_thumbnail(pixels, width, height, &item.image, target);
@@ -238,6 +270,7 @@ mod tests {
             image: Arc::new(RgbaImage::new(1, 1)),
             original_width: 1,
             original_height: 1,
+            loaded: true,
         };
         let overlay = ThumbnailOverlay {
             items: Arc::new(vec![item]),
@@ -254,6 +287,7 @@ mod tests {
                 image: Arc::new(RgbaImage::new(1, 1)),
                 original_width: 1,
                 original_height: 1,
+                loaded: true,
             }]),
             hovered: None,
         };

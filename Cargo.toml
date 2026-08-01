@@ -11,7 +11,7 @@ name = "ime-reborn"
 path = "src/main.rs"
 
 [dependencies]
-image = { version = "=0.24.9", default-features = false, features = ["bmp", "dds", "farbfeld", "gif", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp"] }
+image = { version = "=0.24.9", default-features = false, features = ["bmp", "dds", "farbfeld", "gif", "ico", "jpeg", "jpeg_rayon", "png", "pnm", "qoi", "tga", "tiff", "webp"] }
 windows = { version = "0.58.0", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -24,6 +24,8 @@ windows = { version = "0.58.0", features = [
 [profile.release]
 lto = true
 codegen-units = 1
-opt-level = "z"
+# Image decoding, resampling, and alpha compositing are hot loops. Optimizing
+# for speed is substantially more valuable here than saving a little EXE size.
+opt-level = 3
 panic = "abort"
 strip = true

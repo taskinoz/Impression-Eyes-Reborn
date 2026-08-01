@@ -408,55 +408,61 @@ fn load_image(hwnd: HWND, path: PathBuf) {
     unsafe {
         let _ = KillTimer(hwnd, ANIMATION_TIMER);
     }
-    match decoder::load_animated(&path) {
-        Ok(decoded) => {
-            let first = decoded.first();
+    let files = images_in_folder(&path);
+    let current = files
+        .iter()
+        .position(|item| same_path(item, &path))
+        .unwrap_or(0);
+    let setup = STATE.lock().ok().map(|mut state| {
+        let preview = state
+            .thumbnail_cache
+            .as_ref()
+            .and_then(|cache| cache.preview_for_path(&path));
+        state.navigation_generation = state.navigation_generation.wrapping_add(1);
+        state.thumbnail_generation = state.thumbnail_generation.wrapping_add(1);
+        state.pending_image = None;
+        state.animation.clear();
+        state.animation_index = 0;
+        state.zoom = 1.0;
+        state.files = files;
+        state.current = current;
+        state.overlay_name = display_name(&path);
+        state.thumbnails = None;
+        if let Some(preview) = &preview {
+            state.image = Some(preview.image.clone());
+            state.image_generation = state.image_generation.wrapping_add(1);
+            state.scaled_cache = None;
+        }
+        (
+            state.navigation_generation,
+            state.thumbnail_generation,
+            state.files.clone(),
+            preview,
+        )
+    });
+    let Some((image_generation, thumbnail_generation, files, preview)) = setup else {
+        return;
+    };
+
+    if let Some(preview) = preview {
+        unsafe {
             let (width, height) =
-                unsafe { fit_to_monitor(hwnd, first.image.width(), first.image.height()) };
-            let first_image = first.image.clone();
-            let first_delay = first.delay_ms;
-            let animated = decoded.frames.len() > 1;
-            let preload = if let Ok(mut state) = STATE.lock() {
-                state.image = Some(first_image);
-                state.image_generation = state.image_generation.wrapping_add(1);
-                state.scaled_cache = None;
-                state.zoom = 1.0;
+                fit_to_monitor(hwnd, preview.original_width, preview.original_height);
+            if let Ok(mut state) = STATE.lock() {
                 state.base_width = width;
                 state.base_height = height;
-                state.navigation_generation = state.navigation_generation.wrapping_add(1);
-                state.pending_image = None;
-                state.animation = decoded.frames;
-                state.animation_index = 0;
-                state.files = images_in_folder(&path);
-                state.current = state
-                    .files
-                    .iter()
-                    .position(|item| same_path(item, &path))
-                    .unwrap_or(0);
-                state.overlay_name = display_name(&path);
-                state.thumbnails = None;
-                state.thumbnail_cache = None;
-                state.thumbnail_generation = state.thumbnail_generation.wrapping_add(1);
-                Some((
-                    state.files.clone(),
-                    state.current,
-                    state.thumbnail_generation,
-                ))
-            } else {
-                None
-            };
-            if let Some((files, current, generation)) = preload {
-                preload_thumbnails(hwnd, files, current, generation);
             }
-            unsafe {
-                resize_around_center(hwnd, width, height);
-                announce_file(hwnd, &path);
-                render(hwnd);
-                schedule_animation(hwnd, animated, first_delay);
-            }
+            resize_around_center(hwnd, width, height);
         }
-        Err(error) => eprintln!("Could not open {}: {error}", path.display()),
     }
+    unsafe {
+        announce_file(hwnd, &path);
+        render(hwnd);
+    }
+    // Thumbnail decoding and the full-resolution decode deliberately start as
+    // independent jobs. Neither can hold up the UI thread or the other job.
+    preload_thumbnails(hwnd, files, current, thumbnail_generation);
+    decode_selected_image(hwnd, path, image_generation);
 }
 
 unsafe fn resize_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
@@ -495,9 +501,6 @@ unsafe fn show_shortcuts(hwnd: HWND) {
 
 fn show_thumbnail_overlay(hwnd: HWND) {
     let activated = if let Ok(mut state) = STATE.lock() {
-        if state.thumbnails.is_some() {
-            return;
-        }
         state.thumbnails = state.thumbnail_cache.clone();
         state.thumbnails.is_some()
     } else {
@@ -511,7 +514,6 @@ fn show_thumbnail_overlay(hwnd: HWND) {
 fn preload_thumbnails(hwnd: HWND, files: Vec<PathBuf>, current: usize, generation: u64) {
     let hwnd_value = hwnd.0 as isize;
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(120));
         let still_current = STATE
             .lock()
             .map(|state| state.thumbnail_generation == generation)
@@ -519,25 +521,28 @@ fn preload_thumbnails(hwnd: HWND, files: Vec<PathBuf>, current: usize, generatio
         if !still_current {
             return;
         }
-        let overlay = ThumbnailOverlay::build(&files, current);
-        let accepted = STATE
-            .lock()
-            .map(|mut state| {
-                if state.thumbnail_generation != generation {
-                    return false;
-                }
-                state.thumbnail_cache = overlay;
-                true
-            })
-            .unwrap_or(false);
-        if accepted {
-            unsafe {
-                let hwnd = HWND(hwnd_value as *mut _);
-                if IsWindow(hwnd).as_bool() {
-                    let _ = PostMessageW(hwnd, WM_THUMBNAILS_READY, WPARAM(0), LPARAM(0));
+        let publish = |overlay: ThumbnailOverlay| {
+            let accepted = STATE
+                .lock()
+                .map(|mut state| {
+                    if state.thumbnail_generation != generation {
+                        return false;
+                    }
+                    state.thumbnail_cache = Some(overlay);
+                    true
+                })
+                .unwrap_or(false);
+            if accepted {
+                unsafe {
+                    let hwnd = HWND(hwnd_value as *mut _);
+                    if IsWindow(hwnd).as_bool() {
+                        let _ = PostMessageW(hwnd, WM_THUMBNAILS_READY, WPARAM(0), LPARAM(0));
+                    }
                 }
             }
-        }
+            accepted
+        };
+        let _ = ThumbnailOverlay::build_progressive(&files, current, publish);
     });
 }
 

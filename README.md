@@ -50,6 +50,9 @@ does not reset the position.
 Images keep their aspect ratio during normal resizing; hold `Ctrl` while
 resizing for freeform stretching. Hold `Shift` to open a centered thumbnail
 grid, hover an image to enlarge/select it, and release `Shift` to load it.
+Full-resolution images and thumbnails decode on independent background workers.
+The grid appears immediately and fills progressively, prioritizing smaller,
+faster files so a single large image does not hold up the entire selector.
 Changing images restores that image's native
 dimensions unless it exceeds the active monitor's usable area, in which case it
 is scaled down proportionally. The filename is displayed briefly. Press `B` to

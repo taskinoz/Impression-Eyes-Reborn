@@ -1,0 +1,39 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const repo = "https://github.com/taskinoz/Impression-Eyes-Reborne";
+---
+
+<BaseLayout
+  title="Privacy — Impression Eyes Reborne"
+  description="Privacy policy for Impression Eyes Reborne."
+  footerText="Local images stay local."
+  showFeaturesLink={false}
+>
+  <div class="legal wrap">
+    <p class="eyebrow">Privacy policy · 2 August 2026</p>
+    <h1>Private by design.</h1>
+    <p class="lede">
+      Impression Eyes Reborne does not collect, store, sell or transmit personal data.
+    </p>
+    <section>
+      <h2>What the app accesses</h2>
+      <p>
+        The app reads images that you explicitly open, drop onto it or browse from the same local
+        folder. Image processing happens on your device. The app has no analytics, advertising,
+        accounts or telemetry.
+      </p>
+      <h2>Network use</h2>
+      <p>
+        The desktop app does not make network requests. Downloads and updates are initiated by you
+        through the project website, GitHub or Microsoft Store.
+      </p>
+      <h2>Questions</h2>
+      <p>
+        For privacy questions, open an issue on <a href={repo}>the project’s GitHub repository</a>.
+        If data-handling features are added later, this policy will be updated before they are
+        released.
+      </p>
+    </section>
+  </div>
+</BaseLayout>

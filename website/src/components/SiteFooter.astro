@@ -1,0 +1,13 @@
+---
+interface Props {
+  text: string;
+}
+const { text } = Astro.props;
+const repo = "https://github.com/taskinoz/Impression-Eyes-Reborne";
+---
+
+<footer class="wrap">
+  <span class="site-footer-brand">Impression Eyes Reborne</span>
+  <p>{text}</p>
+  <a href={repo}>GitHub ↗</a>
+</footer>

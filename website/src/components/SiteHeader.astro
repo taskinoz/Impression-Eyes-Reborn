@@ -1,0 +1,21 @@
+---
+interface Props {
+  showFeaturesLink?: boolean;
+}
+const { showFeaturesLink = true } = Astro.props;
+const repo = "https://github.com/taskinoz/Impression-Eyes-Reborne";
+const asset = (path: string) => `${import.meta.env.BASE_URL}${path}`;
+const featuresHref = showFeaturesLink ? "#features" : `${asset("")}#features`;
+---
+
+<header class="site-header wrap">
+  <a class="brand" href={asset("")} aria-label="Impression Eyes Reborne home">
+    <img src={asset("ime-reborn-logo.png")} alt="" width="36" height="36">
+    <span>ime-reborn</span>
+  </a>
+  <nav aria-label="Primary navigation">
+    <a href={featuresHref}>Features</a>
+    <a href={repo}>Source</a>
+    <a href={asset("privacy/")}>Privacy</a>
+  </nav>
+</header>

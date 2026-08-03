@@ -1,0 +1,18 @@
+---
+const shortcuts = [
+  ["Scroll", "Browse folder"],
+  ["Ctrl + Scroll", "Zoom"],
+  ["Shift", "Thumbnail view"],
+  ["R", "Rotate 90°"],
+  ["B", "Change background"],
+  ["Esc", "Close"],
+];
+---
+
+<section class="shortcuts wrap">
+  <div>
+    <p class="eyebrow">Muscle memory included</p>
+    <h2>Everything is one key away.</h2>
+  </div>
+  <dl>{shortcuts.map(([key, action]) => <div><dt><kbd>{key}</kbd></dt><dd>{action}</dd></div>)}</dl>
+</section>

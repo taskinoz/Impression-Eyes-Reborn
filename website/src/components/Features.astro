@@ -1,0 +1,20 @@
+---
+const features = [
+  ["Browse at a flick", "Scroll through every image in a folder without opening a file browser."],
+  ["See the whole folder", "Hold Shift for a fast, centred thumbnail grid. Hover, release, done."],
+  [
+    "Stay out of the way",
+    "A tiny borderless viewer with transparency, rotation, zoom and no chrome.",
+  ],
+];
+---
+
+<section class="features wrap" id="features">
+  <div class="section-heading">
+    <p class="eyebrow">Small by design</p>
+    <h2>The viewer disappears.<br>Your image doesn’t.</h2>
+  </div>
+  <div class="feature-grid">
+    {features.map(([title, description], index) => <article><span class="feature-number">0{index + 1}</span><h3>{title}</h3><p>{description}</p></article>)}
+  </div>
+</section>

@@ -1,0 +1,37 @@
+---
+import "../styles/global.css";
+import SiteFooter from "../components/SiteFooter.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+
+interface Props {
+  title: string;
+  description: string;
+  footerText?: string;
+  showFeaturesLink?: boolean;
+}
+
+const {
+  title,
+  description,
+  footerText = "Made openly, in memory of a wonderfully focused original.",
+  showFeaturesLink = true,
+} = Astro.props;
+const asset = (path: string) => `${import.meta.env.BASE_URL}${path}`;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width">
+    <meta name="theme-color" content="#0b0c0e">
+    <meta name="description" content={description}>
+    <link rel="icon" href={asset("ime-reborn.ico")}>
+    <title>{title}</title>
+  </head>
+  <body>
+    <SiteHeader showFeaturesLink={showFeaturesLink} />
+    <main><slot /></main>
+    <SiteFooter text={footerText} />
+  </body>
+</html>

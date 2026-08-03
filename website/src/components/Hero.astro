@@ -1,0 +1,38 @@
+---
+import ButtonLink from "./ButtonLink.astro";
+
+const repo = "https://github.com/taskinoz/Impression-Eyes-Reborne";
+const download = `${repo}/releases/latest/download/ime-reborn.exe`;
+const releases = `${repo}/releases`;
+---
+
+<section class="hero wrap">
+  <div class="hero-copy">
+    <p class="eyebrow">Open source · Windows · Rust</p>
+    <h1>Images,<br><em>instantly.</em></h1>
+    <p class="lede">
+      A featherweight image viewer that opens fast, stays out of your way, and makes browsing a
+      folder feel effortless.
+    </p>
+    <div class="actions">
+      <ButtonLink href={download} label="Download ime-reborn for Windows" variant="primary"
+        >Download for Windows <span>↓</span></ButtonLink
+      >
+      <ButtonLink href={repo} label="View ime-reborn source code">View source</ButtonLink>
+    </div>
+    <p class="fine-print">
+      Free forever. No installer, accounts or telemetry. <a href={releases}>All releases</a>
+    </p>
+  </div>
+  <div class="product-stage" role="img" aria-label="A preview of the borderless image viewer">
+    <div class="glow"></div>
+    <div class="viewer">
+      <div class="image-scene">
+        <span class="sun"></span><span class="ridge ridge-back"></span
+        ><span class="ridge ridge-front"></span>
+      </div>
+      <span class="file-label">misty-morning.webp&nbsp; (100%)</span>
+    </div>
+    <div class="key-hint"><kbd>Shift</kbd><span>Hold to browse</span></div>
+  </div>
+</section>

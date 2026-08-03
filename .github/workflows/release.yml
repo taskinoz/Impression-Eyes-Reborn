@@ -31,7 +31,9 @@ jobs:
 
       - name: Install Windows resource compiler
         shell: pwsh
-        run: choco install mingw --yes --no-progress
+        run: |
+          choco install mingw --yes --no-progress
+          choco install nsis --yes --no-progress
 
       - name: Verify source
         shell: pwsh
@@ -75,6 +77,32 @@ jobs:
           "exe=target\release\ime-reborn.exe" >> $env:GITHUB_OUTPUT
           "checksum=$checksum" >> $env:GITHUB_OUTPUT
 
+      - name: Build installed edition
+        id: installer
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          if ([string]::IsNullOrWhiteSpace($version) -or $version -notmatch '^\d+\.\d+\.\d+$') {
+            $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+            $version = $metadata.packages[0].version
+          }
+
+          $compiler = @(
+            "C:\Program Files (x86)\NSIS\makensis.exe",
+            "C:\Program Files\NSIS\makensis.exe"
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $compiler) { throw "makensis.exe was not installed" }
+
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          & $compiler /V2 "/DVERSION=$version" "/DVIEWER_EXE=$PWD\target\release\ime-reborn.exe" installer\ime-reborn.nsi
+          if ($LASTEXITCODE -ne 0) { throw "NSIS compilation failed with exit code $LASTEXITCODE" }
+
+          $setup = "dist\ime-reborn-v$version-windows-x86_64-setup.exe"
+          if (-not (Test-Path -LiteralPath $setup)) { throw "NSIS output was not created" }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setup).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path -Leaf $setup)" | Add-Content -LiteralPath "dist\SHA256SUMS.txt"
+          "setup=$setup" >> $env:GITHUB_OUTPUT
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -82,6 +110,7 @@ jobs:
           path: |
             ${{ steps.package.outputs.zip }}
             ${{ steps.package.outputs.exe }}
+            ${{ steps.installer.outputs.setup }}
             ${{ steps.package.outputs.checksum }}
           if-no-files-found: error
 
@@ -95,6 +124,7 @@ jobs:
           $assets = @(
             "${{ steps.package.outputs.zip }}",
             "${{ steps.package.outputs.exe }}",
+            "${{ steps.installer.outputs.setup }}",
             "${{ steps.package.outputs.checksum }}"
           )
 

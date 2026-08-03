@@ -5,6 +5,11 @@
 
 # Rust build output
 /target/
+/dist/
+/website/node_modules/
+/website/dist/
+/website/.astro/
+/website/.preview/
 
 # Local editor and OS files
 /.idea/

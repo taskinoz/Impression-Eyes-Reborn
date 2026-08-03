@@ -103,6 +103,25 @@ jobs:
           "$hash  $(Split-Path -Leaf $setup)" | Add-Content -LiteralPath "dist\SHA256SUMS.txt"
           "setup=$setup" >> $env:GITHUB_OUTPUT
 
+      - name: Build Microsoft Store package
+        if: vars.MSIX_IDENTITY_NAME != '' && vars.MSIX_PUBLISHER != '' && vars.MSIX_PUBLISHER_DISPLAY_NAME != ''
+        shell: pwsh
+        env:
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          if ([string]::IsNullOrWhiteSpace($version) -or $version -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') {
+            $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+            $version = $metadata.packages[0].version
+          }
+          .\packaging\msix\build-msix.ps1 `
+            -IdentityName $env:MSIX_IDENTITY_NAME `
+            -Publisher $env:MSIX_PUBLISHER `
+            -PublisherDisplayName $env:MSIX_PUBLISHER_DISPLAY_NAME `
+            -Version $version
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -112,6 +131,8 @@ jobs:
             ${{ steps.package.outputs.exe }}
             ${{ steps.installer.outputs.setup }}
             ${{ steps.package.outputs.checksum }}
+            dist/*.msix
+            dist/*.msixupload
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -127,6 +148,8 @@ jobs:
             "${{ steps.installer.outputs.setup }}",
             "${{ steps.package.outputs.checksum }}"
           )
+          $assets += Get-ChildItem -Path "dist\*.msix", "dist\*.msixupload" -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName
 
           gh release view $tag 2>$null
           if ($LASTEXITCODE -eq 0) {

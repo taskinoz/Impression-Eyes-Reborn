@@ -83,6 +83,28 @@ drop target or with an image path:
 .\target\release\ime-reborn.exe .\picture.png
 ```
 
+### Microsoft Store package
+
+Reserve the app in Partner Center, then copy the exact values shown under
+**Product management → Product identity** into this command:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\packaging\msix\build-msix.ps1 `
+  -IdentityName "YourStoreIdentityName" `
+  -Publisher "CN=your-partner-center-publisher-id" `
+  -PublisherDisplayName "Your publisher display name"
+```
+
+The script builds both an unsigned `.msix` and the recommended
+`.msixupload` submission archive in `dist`. Partner Center signs the
+accepted Store package. The raw MSIX is intentionally unsigned; local
+sideloading requires a certificate whose subject matches `Publisher`.
+
+Tagged GitHub releases build these packages automatically when the repository
+variables `MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER`, and
+`MSIX_PUBLISHER_DISPLAY_NAME` are configured. These values are assigned by
+Partner Center and must match exactly.
+
 ## History
 The original developer has passed away and the closed-source application is no
 longer maintained. This project aims to provide a maintainable replacement; it

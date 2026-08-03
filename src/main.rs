@@ -1016,7 +1016,7 @@ unsafe fn render(hwnd: HWND) {
     let display_label =
         overlay_name.map(|name| format!("{name} ({}%)", (zoom * 100.0).round() as u32));
     if let Some(name) = &display_label {
-        let label_width = ((name.chars().count() as i32 * 7) + 18).clamp(70, width);
+        let label_width = filename_label_width(name, width);
         let label_left = width - label_width;
         let bar_height = height.min(24);
         for y in 0..bar_height {
@@ -1225,6 +1225,14 @@ fn checked_rgba_len(width: i32, height: i32) -> Option<usize> {
         .filter(|length| *length <= MAX_RENDER_BYTES)
 }
 
+fn filename_label_width(name: &str, viewport_width: i32) -> i32 {
+    let desired = (name.chars().count() as i32)
+        .saturating_mul(7)
+        .saturating_add(18)
+        .max(70);
+    desired.min(viewport_width.max(1))
+}
+
 fn background_rgb(background: Background, x: i32, y: i32) -> [u8; 3] {
     match background {
         Background::Black => [0, 0, 0],
@@ -1405,7 +1413,7 @@ impl OsStringExt for OsString {
 
 #[cfg(test)]
 mod tests {
-    use super::{checked_rgba_len, oriented_dimensions, scale_into_viewport};
+    use super::{checked_rgba_len, filename_label_width, oriented_dimensions, scale_into_viewport};
     use image::{Rgba, RgbaImage};
 
     #[test]
@@ -1440,5 +1448,11 @@ mod tests {
         assert_eq!(oriented_dimensions(1920, 1080, 1), (1080, 1920));
         assert_eq!(oriented_dimensions(1920, 1080, 2), (1920, 1080));
         assert_eq!(oriented_dimensions(1920, 1080, 3), (1080, 1920));
+    }
+
+    #[test]
+    fn filename_overlay_supports_tiny_image_windows() {
+        assert_eq!(filename_label_width("SoupChicken.png", 19), 19);
+        assert_eq!(filename_label_width("x.png", 200), 70);
     }
 }

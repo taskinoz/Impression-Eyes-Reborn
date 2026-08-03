@@ -171,4 +171,15 @@ mod tests {
         assert_eq!(decoded.first().image.dimensions(), (3, 2));
         assert_eq!(decoded.first().image.get_pixel(0, 0).0, [12, 34, 56, 255]);
     }
+
+    #[test]
+    fn tiny_png_regression_fixture_decodes() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("SoupChicken.png");
+        let decoded = load_animated(&path).expect("decode tiny PNG regression fixture");
+        assert_eq!(decoded.frames.len(), 1);
+        assert_eq!(decoded.first().image.dimensions(), (19, 24));
+    }
 }

@@ -139,7 +139,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "impression-eyes-reborne"
+name = "impression-eyes-reborn"
 version = "0.1.0"
 dependencies = [
  "image",

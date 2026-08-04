@@ -1,5 +1,5 @@
 [package]
-name = "impression-eyes-reborne"
+name = "impression-eyes-reborn"
 version = "0.1.0"
 edition = "2021"
 description = "A tiny, frameless image overlay viewer for Windows"

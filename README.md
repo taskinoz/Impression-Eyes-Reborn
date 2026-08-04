@@ -1,4 +1,4 @@
-# Impression Eyes Reborne
+# Impression Eyes Reborn
 A new open-source, clean-room image viewer written in Rust and inspired by the
 user experience of Impression Eyes.
 

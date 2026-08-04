@@ -11,7 +11,7 @@
     ProcessorArchitecture="x64" />
 
   <Properties>
-    <DisplayName>Impression Eyes Reborne</DisplayName>
+    <DisplayName>Impression Eyes Reborn</DisplayName>
     <PublisherDisplayName>{{PUBLISHER_DISPLAY_NAME}}</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
@@ -34,7 +34,7 @@
       EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         AppListEntry="default"
-        DisplayName="Impression Eyes Reborne"
+        DisplayName="Impression Eyes Reborn"
         Description="A fast, lightweight image viewer."
         BackgroundColor="transparent"
         Square44x44Logo="Assets\Square44x44Logo.png"

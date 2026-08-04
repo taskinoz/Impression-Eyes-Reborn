@@ -168,7 +168,7 @@ fn main() -> windows::core::Result<()> {
     unsafe {
         let previously_focused = GetForegroundWindow();
         let instance = HINSTANCE(GetModuleHandleW(None)?.0);
-        let class_name = w!("ImpressionEyesReborneWindow");
+        let class_name = w!("ImpressionEyesRebornWindow");
         let class = WNDCLASSW {
             hCursor: LoadCursorW(None, IDC_ARROW)?,
             hInstance: instance,
@@ -181,7 +181,7 @@ fn main() -> windows::core::Result<()> {
         let hwnd = CreateWindowExW(
             WS_EX_APPWINDOW | WS_EX_LAYERED,
             class_name,
-            w!("Impression Eyes Reborne"),
+            w!("Impression Eyes Reborn"),
             WS_POPUP,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -509,7 +509,7 @@ unsafe fn show_shortcuts(hwnd: HWND) {
     let _ = MessageBoxW(
         hwnd,
         w!("Drop image: Open\nMouse wheel / Space / Backspace: Browse\nCtrl + mouse wheel or +/-: Zoom\n0: Reset zoom\nR: Rotate clockwise\nCtrl+R: Rotate counter-clockwise\nHome / End: First / last\nHold Shift: Thumbnail browser\nDrag: Move window\nEdges and corners: Resize\nCtrl + resize: Freeform stretch\nB: Cycle background\nF7: Desktop transparency\nF8: Always on top\nF1: Show this help\nEscape: Close"),
-        w!("Impression Eyes Reborne shortcuts"),
+        w!("Impression Eyes Reborn shortcuts"),
         MB_OK,
     );
 }
@@ -936,7 +936,7 @@ unsafe fn announce_file(hwnd: HWND, path: &Path) {
     use std::os::windows::ffi::OsStrExt;
 
     let title = format!(
-        "{} — Impression Eyes Reborne",
+        "{} — Impression Eyes Reborn",
         display_name(path).unwrap_or_else(|| "Image".to_string())
     );
     let mut title_wide: Vec<u16> = std::ffi::OsStr::new(&title).encode_wide().collect();

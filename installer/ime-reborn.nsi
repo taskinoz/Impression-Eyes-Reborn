@@ -13,7 +13,7 @@ Unicode True
 
 !define PRODUCT_NAME "ime-reborn"
 !define PRODUCT_PUBLISHER "ime-reborn contributors"
-!define PRODUCT_WEB "https://github.com/taskinoz/Impression-Eyes-Reborne"
+!define PRODUCT_WEB "https://github.com/taskinoz/Impression-Eyes-Reborn"
 !define PRODUCT_KEY "Software\ime-reborn"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\ime-reborn"
 
@@ -55,7 +55,7 @@ VIAddVersionKey /LANG=${LANG_ENGLISH} "LegalCopyright" "ime-reborn contributors"
 
 Function EnsureViewerClosed
   check_again:
-    FindWindow $0 "ImpressionEyesReborneWindow"
+    FindWindow $0 "ImpressionEyesRebornWindow"
     ${If} $0 == 0
       Return
     ${EndIf}
@@ -164,7 +164,7 @@ Section -FinalizeAssociations
 SectionEnd
 
 Section "Uninstall"
-  FindWindow $0 "ImpressionEyesReborneWindow"
+  FindWindow $0 "ImpressionEyesRebornWindow"
   ${If} $0 != 0
     IfSilent silent_uninstall_failure
     MessageBox MB_OK|MB_ICONEXCLAMATION "Close every ime-reborn viewer window before uninstalling."

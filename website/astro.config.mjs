@@ -1,8 +1,7 @@
 import { defineConfig } from "astro/config";
 
 export default defineConfig({
-  site: "https://taskinoz.github.io",
-  base: "/Impression-Eyes-Reborne",
+  site: "https://ime-reborn.com",
   output: "static",
   trailingSlash: "always",
 });

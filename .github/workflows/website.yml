@@ -1,0 +1,86 @@
+name: Website
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "website/**"
+      - ".github/workflows/website.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build and deploy ime-reborn.com
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://ime-reborn.com
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install website dependencies
+        working-directory: website
+        run: bun install --frozen-lockfile
+
+      - name: Check website formatting and lint
+        working-directory: website
+        run: bun run ci
+
+      - name: Build Astro site
+        working-directory: website
+        run: bun run build
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          : "${SSH_KEY:?SSH_KEY is required}"
+          : "${SSH_KNOWN_HOSTS:?SSH_KNOWN_HOSTS is required}"
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy over SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_DEPLOY_PATH: ${{ secrets.SSH_DEPLOY_PATH || 'public_html/ime-reborn.com' }}
+        run: |
+          : "${SSH_HOST:?SSH_HOST is required}"
+          : "${SSH_USER:?SSH_USER is required}"
+          : "${SSH_DEPLOY_PATH:?SSH_DEPLOY_PATH is required}"
+          SSH_PORT="${SSH_PORT:-22}"
+
+          case "$SSH_DEPLOY_PATH" in
+            *ime-reborn.com*) ;;
+            *)
+              echo "SSH_DEPLOY_PATH must be a dedicated directory containing ime-reborn.com"
+              exit 1
+              ;;
+          esac
+
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -p "$SSH_PORT" \
+            "$SSH_USER@$SSH_HOST" \
+            "mkdir -p -- '$SSH_DEPLOY_PATH'"
+          rsync -rlvz --delete-delay \
+            -e "ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -p $SSH_PORT" \
+            website/dist/ \
+            "$SSH_USER@$SSH_HOST:$SSH_DEPLOY_PATH/"

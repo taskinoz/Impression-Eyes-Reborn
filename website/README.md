@@ -25,9 +25,10 @@ these GitHub Actions repository secrets:
   defaults to `public_html/ime-reborn.com` and must contain
   `ime-reborn.com`
 
-Point the add-on domain at that same document root. The workflow synchronizes
-the generated `website/dist/` contents and removes obsolete files, so do not
-use a shared `public_html` directory.
+Point the add-on domain at that same document root. The workflow streams a
+compressed `website/dist/` build over SSH and replaces the document root's
+contents, so do not use a shared `public_html` directory. The server needs
+standard `find` and `tar` commands but does not need `rsync`.
 
 Before publishing, enable GitHub Sponsors for `taskinoz` or replace the
 `support` URL in `src/pages/index.astro` with the preferred contribution page.

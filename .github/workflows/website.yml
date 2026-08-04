@@ -77,10 +77,9 @@ jobs:
               ;;
           esac
 
-          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -p "$SSH_PORT" \
-            "$SSH_USER@$SSH_HOST" \
-            "mkdir -p -- '$SSH_DEPLOY_PATH'"
-          rsync -rlvz --delete-delay \
-            -e "ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -p $SSH_PORT" \
-            website/dist/ \
-            "$SSH_USER@$SSH_HOST:$SSH_DEPLOY_PATH/"
+          tar -C website/dist -czf - . | \
+            ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -p "$SSH_PORT" \
+              "$SSH_USER@$SSH_HOST" \
+              "mkdir -p -- '$SSH_DEPLOY_PATH' &&
+               find '$SSH_DEPLOY_PATH' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + &&
+               tar -xzf - -C '$SSH_DEPLOY_PATH'"

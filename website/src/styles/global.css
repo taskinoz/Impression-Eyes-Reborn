@@ -176,6 +176,94 @@ h1 em {
   background: rgba(255, 255, 255, 0.025);
 }
 
+.download-menu {
+  position: relative;
+  z-index: 5;
+}
+
+.download-menu summary {
+  min-width: 228px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.download-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.download-chevron {
+  display: block;
+  flex: 0 0 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.75;
+  transition: transform 0.18s ease;
+}
+
+.download-menu[open] .download-chevron {
+  transform: rotate(180deg);
+}
+
+.download-options {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  width: min(370px, calc(100vw - 40px));
+  padding: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(17, 19, 22, 0.98);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(18px);
+}
+
+.download-options a {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 12px;
+  color: var(--ink);
+  text-decoration: none;
+  transition: background 0.15s ease;
+}
+
+.download-options a:hover,
+.download-options a:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.download-option-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.download-option-copy strong {
+  font-size: 0.87rem;
+}
+
+.download-option-copy small {
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.download-badge {
+  padding: 3px 6px;
+  border: 1px solid rgba(25, 217, 229, 0.28);
+  color: var(--cyan);
+  font-size: 0.57rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.download-arrow {
+  color: var(--cyan);
+}
+
 .fine-print {
   color: #6f7175;
   font-size: 0.75rem;
@@ -363,7 +451,7 @@ h2 {
   border-right: 1px solid var(--line);
 }
 
-.feature-grid article+article {
+.feature-grid article + article {
   padding-left: 32px;
 }
 
@@ -521,7 +609,7 @@ footer {
   }
 
   .feature-grid article,
-  .feature-grid article+article {
+  .feature-grid article + article {
     min-height: 210px;
     padding: 24px 0;
     border-right: 0;
@@ -606,6 +694,11 @@ footer {
   }
 
   .button {
+    transition: none;
+  }
+
+  .download-chevron,
+  .download-options a {
     transition: none;
   }
 }

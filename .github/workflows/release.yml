@@ -64,9 +64,11 @@ jobs:
 
           $zip = Join-Path "dist" "$archiveName.zip"
           Compress-Archive -Path "$stage\*" -DestinationPath $zip -CompressionLevel Optimal
+          $stableZip = Join-Path "dist" "ime-reborn-windows-x86_64.zip"
+          Copy-Item -LiteralPath $zip -Destination $stableZip
 
           $checksum = Join-Path "dist" "SHA256SUMS.txt"
-          $files = @("target\release\ime-reborn.exe", $zip)
+          $files = @("target\release\ime-reborn.exe", $zip, $stableZip)
           foreach ($file in $files) {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
             $name = Split-Path -Leaf $file
@@ -74,6 +76,7 @@ jobs:
           }
 
           "zip=$zip" >> $env:GITHUB_OUTPUT
+          "stable_zip=$stableZip" >> $env:GITHUB_OUTPUT
           "exe=target\release\ime-reborn.exe" >> $env:GITHUB_OUTPUT
           "checksum=$checksum" >> $env:GITHUB_OUTPUT
 
@@ -99,9 +102,14 @@ jobs:
 
           $setup = "dist\ime-reborn-v$version-windows-x86_64-setup.exe"
           if (-not (Test-Path -LiteralPath $setup)) { throw "NSIS output was not created" }
+          $stableSetup = "dist\ime-reborn-windows-x86_64-setup.exe"
+          Copy-Item -LiteralPath $setup -Destination $stableSetup
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setup).Hash.ToLowerInvariant()
           "$hash  $(Split-Path -Leaf $setup)" | Add-Content -LiteralPath "dist\SHA256SUMS.txt"
+          $stableHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stableSetup).Hash.ToLowerInvariant()
+          "$stableHash  $(Split-Path -Leaf $stableSetup)" | Add-Content -LiteralPath "dist\SHA256SUMS.txt"
           "setup=$setup" >> $env:GITHUB_OUTPUT
+          "stable_setup=$stableSetup" >> $env:GITHUB_OUTPUT
 
       - name: Build Microsoft Store package
         if: vars.MSIX_IDENTITY_NAME != '' && vars.MSIX_PUBLISHER != '' && vars.MSIX_PUBLISHER_DISPLAY_NAME != ''
@@ -128,8 +136,10 @@ jobs:
           name: ime-reborn-${{ github.ref_name }}-windows-x86_64
           path: |
             ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.stable_zip }}
             ${{ steps.package.outputs.exe }}
             ${{ steps.installer.outputs.setup }}
+            ${{ steps.installer.outputs.stable_setup }}
             ${{ steps.package.outputs.checksum }}
             dist/*.msix
             dist/*.msixupload
@@ -144,8 +154,10 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $assets = @(
             "${{ steps.package.outputs.zip }}",
+            "${{ steps.package.outputs.stable_zip }}",
             "${{ steps.package.outputs.exe }}",
             "${{ steps.installer.outputs.setup }}",
+            "${{ steps.installer.outputs.stable_setup }}",
             "${{ steps.package.outputs.checksum }}"
           )
           $assets += Get-ChildItem -Path "dist\*.msix", "dist\*.msixupload" -ErrorAction SilentlyContinue |

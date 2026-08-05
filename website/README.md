@@ -30,5 +30,5 @@ compressed `website/dist/` build over SSH and replaces the document root's
 contents, so do not use a shared `public_html` directory. The server needs
 standard `find` and `tar` commands but does not need `rsync`.
 
-Before publishing, enable GitHub Sponsors for `taskinoz` or replace the
-`support` URL in `src/pages/index.astro` with the preferred contribution page.
+Optional contributions link to the
+[`taskinoz` Patreon page](https://www.patreon.com/taskinoz).

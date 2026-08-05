@@ -1,0 +1,35 @@
+---
+interface DownloadOption {
+  href: string;
+  name: string;
+  description: string;
+  badge?: string;
+}
+
+interface Props {
+  options: DownloadOption[];
+}
+
+const { options } = Astro.props;
+---
+
+<details class="download-menu">
+  <summary class="button primary">
+    <span>Download for Windows</span>
+    <svg class="download-chevron" aria-hidden="true" viewBox="0 0 16 16" width="16" height="16">
+      <path d="m3 6 5 5 5-5"></path>
+    </svg>
+  </summary>
+  <div class="download-options">
+    {options.map((option) => (
+        <a href={option.href}>
+          <span class="download-option-copy">
+            <strong>{option.name}</strong>
+            <small>{option.description}</small>
+          </span>
+          {option.badge && <span class="download-badge">{option.badge}</span>}
+          <span class="download-arrow" aria-hidden="true">↓</span>
+        </a>
+      ))}
+  </div>
+</details>

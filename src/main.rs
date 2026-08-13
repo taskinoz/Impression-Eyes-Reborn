@@ -56,6 +56,8 @@ const KEY_HOME: usize = 0x24;
 const KEY_END: usize = 0x23;
 const KEY_SPACE: usize = 0x20;
 const KEY_BACKSPACE: usize = 0x08;
+const KEY_LEFT: usize = 0x25;
+const KEY_RIGHT: usize = 0x27;
 const KEY_F1: usize = 0x70;
 const KEY_B: usize = 0x42;
 const KEY_R: usize = 0x52;
@@ -324,11 +326,11 @@ unsafe extern "system" fn window_proc(
             select_image(hwnd, Selection::Last);
             LRESULT(0)
         }
-        WM_KEYDOWN if wparam.0 == KEY_SPACE => {
+        WM_KEYDOWN if wparam.0 == KEY_SPACE || wparam.0 == KEY_RIGHT => {
             select_image(hwnd, Selection::Relative(1));
             LRESULT(0)
         }
-        WM_KEYDOWN if wparam.0 == KEY_BACKSPACE => {
+        WM_KEYDOWN if wparam.0 == KEY_BACKSPACE || wparam.0 == KEY_LEFT => {
             select_image(hwnd, Selection::Relative(-1));
             LRESULT(0)
         }
@@ -508,7 +510,7 @@ unsafe fn resize_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 unsafe fn show_shortcuts(hwnd: HWND) {
     let _ = MessageBoxW(
         hwnd,
-        w!("Drop image: Open\nMouse wheel / Space / Backspace: Browse\nCtrl + mouse wheel or +/-: Zoom\n0: Reset zoom\nR: Rotate clockwise\nCtrl+R: Rotate counter-clockwise\nHome / End: First / last\nHold Shift: Thumbnail browser\nDrag: Move window\nEdges and corners: Resize\nCtrl + resize: Freeform stretch\nB: Cycle background\nF7: Desktop transparency\nF8: Always on top\nF1: Show this help\nEscape: Close"),
+        w!("Drop image: Open\nMouse wheel / Left / Right: Browse\nSpace / Backspace: Next / previous\nCtrl + mouse wheel or +/-: Zoom\n0: Reset zoom\nR: Rotate clockwise\nCtrl+R: Rotate counter-clockwise\nHome / End: First / last\nHold Shift: Thumbnail browser\nDrag: Move window\nEdges and corners: Resize\nCtrl + resize: Freeform stretch\nB: Cycle background\nF7: Desktop transparency\nF8: Always on top\nF1: Show this help\nEscape: Close"),
         w!("Impression Eyes Reborn shortcuts"),
         MB_OK,
     );

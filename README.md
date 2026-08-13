@@ -33,9 +33,10 @@ The first Windows prototype implements the core overlay workflow:
 - `Escape` or `Alt+F4` to close the active viewer.
 
 Folder navigation follows Explorer-style natural filename ordering (`image2`
-before `image10`). `Home` selects the first image, `End` the last, `Space` the
-next, and `Backspace` the previous; wheel and relative-key navigation wrap at
-folder boundaries.
+before `image10`). `Home` selects the first image, `End` the last, `Space`
+or Right Arrow selects the next image, and `Backspace` or Left Arrow selects
+the previous image; wheel and relative-key navigation wrap at folder
+boundaries.
 
 The empty startup window shows the drop target and advertises `F1`. Press `F1`
 at any time to display the complete shortcut reference.

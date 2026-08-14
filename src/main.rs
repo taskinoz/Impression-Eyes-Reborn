@@ -29,7 +29,10 @@ use windows::{
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_SHIFT},
-            Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP},
+            Shell::{
+                DragAcceptFiles, DragFinish, DragQueryFileW, SHFileOperationW, FOF_ALLOWUNDO,
+                FOF_WANTNUKEWARNING, FO_DELETE, HDROP, SHFILEOPSTRUCTW,
+            },
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
                 GetMessageW, GetWindowRect, IsWindow, KillTimer, LoadCursorW, MessageBoxW,
@@ -56,6 +59,7 @@ const KEY_HOME: usize = 0x24;
 const KEY_END: usize = 0x23;
 const KEY_SPACE: usize = 0x20;
 const KEY_BACKSPACE: usize = 0x08;
+const KEY_DELETE: usize = 0x2e;
 const KEY_LEFT: usize = 0x25;
 const KEY_RIGHT: usize = 0x27;
 const KEY_F1: usize = 0x70;
@@ -334,6 +338,10 @@ unsafe extern "system" fn window_proc(
             select_image(hwnd, Selection::Relative(-1));
             LRESULT(0)
         }
+        WM_KEYDOWN if wparam.0 == KEY_DELETE && lparam.0 & (1 << 30) == 0 => {
+            delete_current_image(hwnd);
+            LRESULT(0)
+        }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) as u16) as i16;
             if GetKeyState(VK_CONTROL.0 as i32) < 0 {
@@ -510,7 +518,7 @@ unsafe fn resize_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 unsafe fn show_shortcuts(hwnd: HWND) {
     let _ = MessageBoxW(
         hwnd,
-        w!("Drop image: Open\nMouse wheel / Left / Right: Browse\nSpace / Backspace: Next / previous\nCtrl + mouse wheel or +/-: Zoom\n0: Reset zoom\nR: Rotate clockwise\nCtrl+R: Rotate counter-clockwise\nHome / End: First / last\nHold Shift: Thumbnail browser\nDrag: Move window\nEdges and corners: Resize\nCtrl + resize: Freeform stretch\nB: Cycle background\nF7: Desktop transparency\nF8: Always on top\nF1: Show this help\nEscape: Close"),
+        w!("Drop image: Open\nMouse wheel / Left / Right: Browse\nSpace / Backspace: Next / previous\nDelete: Move image to Recycle Bin\nCtrl + mouse wheel or +/-: Zoom\n0: Reset zoom\nR: Rotate clockwise\nCtrl+R: Rotate counter-clockwise\nHome / End: First / last\nHold Shift: Thumbnail browser\nDrag: Move window\nEdges and corners: Resize\nCtrl + resize: Freeform stretch\nB: Cycle background\nF7: Desktop transparency\nF8: Always on top\nF1: Show this help\nEscape: Close"),
         w!("Impression Eyes Reborn shortcuts"),
         MB_OK,
     );
@@ -660,6 +668,85 @@ enum Selection {
     First,
     Last,
     Relative(isize),
+}
+
+fn next_index_after_removal(removed_index: usize, remaining_count: usize) -> Option<usize> {
+    (remaining_count > 0).then(|| removed_index.min(remaining_count - 1))
+}
+
+fn delete_current_image(hwnd: HWND) {
+    let current = STATE.lock().ok().and_then(|state| {
+        state
+            .files
+            .get(state.current)
+            .cloned()
+            .map(|path| (path, state.current))
+    });
+    let Some((path, removed_index)) = current else {
+        return;
+    };
+
+    let mut path_wide: Vec<u16> = {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str().encode_wide().collect()
+    };
+    // SHFileOperation expects a double-null-terminated list of source paths.
+    path_wide.extend([0, 0]);
+    let mut operation = SHFILEOPSTRUCTW {
+        hwnd,
+        wFunc: FO_DELETE,
+        pFrom: PCWSTR(path_wide.as_ptr()),
+        fFlags: (FOF_ALLOWUNDO | FOF_WANTNUKEWARNING).0 as u16,
+        ..Default::default()
+    };
+    let result = unsafe { SHFileOperationW(&mut operation) };
+    if result != 0 || operation.fAnyOperationsAborted.as_bool() {
+        return;
+    }
+
+    let remaining: Vec<_> = images_in_folder(&path)
+        .into_iter()
+        .filter(|candidate| candidate.exists() && !same_path(candidate, &path))
+        .collect();
+    let next = next_index_after_removal(removed_index, remaining.len())
+        .and_then(|index| remaining.get(index))
+        .cloned();
+
+    // Invalidate work that still references the deleted file, but retain the
+    // completed thumbnail cache so load_image can immediately show the next
+    // image's preview while its full-resolution decode runs.
+    if let Ok(mut state) = STATE.lock() {
+        state.navigation_generation = state.navigation_generation.wrapping_add(1);
+        state.thumbnail_generation = state.thumbnail_generation.wrapping_add(1);
+        state.pending_image = None;
+        state.animation.clear();
+        state.thumbnails = None;
+        let next_has_preview = next
+            .as_ref()
+            .and_then(|path| {
+                state
+                    .thumbnail_cache
+                    .as_ref()
+                    .and_then(|cache| cache.preview_for_path(path))
+            })
+            .is_some();
+        if next.is_some() && !next_has_preview {
+            // Never leave the deleted full-resolution frame on screen. A
+            // transparent pixel renders as the selected background until the
+            // next decode completes.
+            state.image = Some(Arc::new(RgbaImage::new(1, 1)));
+            state.original_width = 1;
+            state.original_height = 1;
+            state.image_generation = state.image_generation.wrapping_add(1);
+            state.scaled_cache = None;
+        }
+    }
+
+    if let Some(next) = next {
+        load_image(hwnd, next);
+    } else {
+        unsafe { PostQuitMessage(0) };
+    }
 }
 
 fn change_zoom(hwnd: HWND, factor: f64) {
@@ -1415,7 +1502,10 @@ impl OsStringExt for OsString {
 
 #[cfg(test)]
 mod tests {
-    use super::{checked_rgba_len, filename_label_width, oriented_dimensions, scale_into_viewport};
+    use super::{
+        checked_rgba_len, filename_label_width, next_index_after_removal, oriented_dimensions,
+        scale_into_viewport,
+    };
     use image::{Rgba, RgbaImage};
 
     #[test]
@@ -1456,5 +1546,12 @@ mod tests {
     fn filename_overlay_supports_tiny_image_windows() {
         assert_eq!(filename_label_width("SoupChicken.png", 19), 19);
         assert_eq!(filename_label_width("x.png", 200), 70);
+    }
+
+    #[test]
+    fn deletion_selects_the_next_item_or_wraps_to_the_previous_end() {
+        assert_eq!(next_index_after_removal(1, 2), Some(1));
+        assert_eq!(next_index_after_removal(2, 2), Some(1));
+        assert_eq!(next_index_after_removal(0, 0), None);
     }
 }

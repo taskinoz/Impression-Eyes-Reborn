@@ -38,6 +38,9 @@ or Right Arrow selects the next image, and `Backspace` or Left Arrow selects
 the previous image; wheel and relative-key navigation wrap at folder
 boundaries.
 
+Press `Delete` to move the current image to the Windows Recycle Bin and open
+the next image in the folder. Deleting the final image closes the viewer.
+
 The empty startup window shows the drop target and advertises `F1`. Press `F1`
 at any time to display the complete shortcut reference.
 

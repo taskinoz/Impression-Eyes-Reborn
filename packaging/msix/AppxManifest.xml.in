@@ -49,6 +49,7 @@
             <uap:DisplayName>Supported images</uap:DisplayName>
             <uap:Logo>Assets\Square44x44Logo.png</uap:Logo>
             <uap:SupportedFileTypes>
+              <uap:FileType>.avif</uap:FileType>
               <uap:FileType>.bmp</uap:FileType>
               <uap:FileType>.dds</uap:FileType>
               <uap:FileType>.ff</uap:FileType>

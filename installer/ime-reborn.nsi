@@ -122,6 +122,7 @@ SectionGroup /e "File associations (optional)" AssociationsGroup
     SectionEnd
   !macroend
 
+  !insertmacro AssociationSection AssocAvif "AVIF images (.avif)" "ime-reborn.avif" "AVIF image" "image/avif"
   !insertmacro AssociationSection AssocJpeg "JPEG images (.jpg, .jpeg)" "ime-reborn.jpeg" "JPEG image" "image/jpeg"
   !insertmacro AssociationSection AssocPng "PNG images (.png)" "ime-reborn.png" "PNG image" "image/png"
   !insertmacro AssociationSection AssocGif "GIF images (.gif)" "ime-reborn.gif" "GIF image" "image/gif"
@@ -147,6 +148,7 @@ SectionGroupEnd
 !macroend
 
 Section -FinalizeAssociations
+  !insertmacro RegisterExtension ${AssocAvif} "avif" "ime-reborn.avif" "image/avif"
   !insertmacro RegisterExtension ${AssocJpeg} "jpg" "ime-reborn.jpeg" "image/jpeg"
   !insertmacro RegisterExtension ${AssocJpeg} "jpeg" "ime-reborn.jpeg" "image/jpeg"
   !insertmacro RegisterExtension ${AssocPng} "png" "ime-reborn.png" "image/png"
@@ -187,6 +189,7 @@ Section "Uninstall"
   !macro UnregisterExtension EXT PROG_ID
     DeleteRegValue HKCU "Software\Classes\.${EXT}\OpenWithProgids" "${PROG_ID}"
   !macroend
+  !insertmacro UnregisterExtension "avif" "ime-reborn.avif"
   !insertmacro UnregisterExtension "jpg" "ime-reborn.jpeg"
   !insertmacro UnregisterExtension "jpeg" "ime-reborn.jpeg"
   !insertmacro UnregisterExtension "png" "ime-reborn.png"
@@ -205,6 +208,7 @@ Section "Uninstall"
   !insertmacro UnregisterExtension "qoi" "ime-reborn.qoi"
   !insertmacro UnregisterExtension "tga" "ime-reborn.tga"
 
+  DeleteRegKey HKCU "Software\Classes\ime-reborn.avif"
   DeleteRegKey HKCU "Software\Classes\ime-reborn.jpeg"
   DeleteRegKey HKCU "Software\Classes\ime-reborn.png"
   DeleteRegKey HKCU "Software\Classes\ime-reborn.gif"

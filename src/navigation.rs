@@ -39,7 +39,8 @@ pub fn is_supported_image(path: &Path) -> bool {
             .map(str::to_ascii_lowercase)
             .as_deref(),
         Some(
-            "bmp"
+            "avif"
+                | "bmp"
                 | "dds"
                 | "ff"
                 | "gif"
@@ -81,6 +82,7 @@ mod tests {
     fn supported_extensions_are_case_insensitive() {
         assert!(is_supported_image(Path::new("photo.PNG")));
         assert!(is_supported_image(Path::new("photo.jpeg")));
+        assert!(is_supported_image(Path::new("photo.AVIF")));
         assert!(!is_supported_image(Path::new("notes.txt")));
     }
 

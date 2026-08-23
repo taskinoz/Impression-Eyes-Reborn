@@ -1,4 +1,4 @@
-use std::{fs::File, io::BufReader, path::Path, sync::Arc};
+use std::{fs, fs::File, io::BufReader, path::Path, sync::Arc};
 
 use image::{
     codecs::{gif::GifDecoder, webp::WebPDecoder},
@@ -8,6 +8,7 @@ use image::{
 
 const MAX_IMAGE_DIMENSION: u32 = 32_768;
 const MAX_DECODER_ALLOCATION: u64 = 256 * 1024 * 1024;
+const MAX_AVIF_FILE_SIZE: u64 = 256 * 1024 * 1024;
 const MAX_ANIMATION_FRAMES: usize = 512;
 const DEFAULT_FRAME_DELAY_MS: u32 = 100;
 const MIN_FRAME_DELAY_MS: u32 = 10;
@@ -28,9 +29,53 @@ impl DecodedImage {
 }
 
 pub fn load(path: &Path) -> ImageResult<DynamicImage> {
+    if is_avif(path) {
+        return load_avif(path).map(DynamicImage::ImageRgba8);
+    }
     let mut reader = ImageReader::open(path)?.with_guessed_format()?;
     reader.limits(decoder_limits());
     reader.decode()
+}
+
+fn is_avif(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("avif"))
+}
+
+fn load_avif(path: &Path) -> ImageResult<RgbaImage> {
+    let metadata = fs::metadata(path)?;
+    if metadata.len() > MAX_AVIF_FILE_SIZE {
+        return Err(image::ImageError::Limits(
+            image::error::LimitError::from_kind(image::error::LimitErrorKind::InsufficientMemory),
+        ));
+    }
+    let bytes = fs::read(path)?;
+    let decoded = libavif::decode_rgb(&bytes).map_err(|error| {
+        image::ImageError::Decoding(image::error::DecodingError::new(
+            image::ImageFormat::Avif.into(),
+            error,
+        ))
+    })?;
+    let width = decoded.width();
+    let height = decoded.height();
+    if width > MAX_IMAGE_DIMENSION
+        || height > MAX_IMAGE_DIMENSION
+        || u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .is_none_or(|bytes| bytes > MAX_DECODER_ALLOCATION)
+    {
+        return Err(image::ImageError::Limits(
+            image::error::LimitError::from_kind(image::error::LimitErrorKind::DimensionError),
+        ));
+    }
+    RgbaImage::from_raw(width, height, decoded.to_vec()).ok_or_else(|| {
+        image::ImageError::Decoding(image::error::DecodingError::new(
+            image::ImageFormat::Avif.into(),
+            "AVIF decoder returned an invalid RGBA buffer length".to_string(),
+        ))
+    })
 }
 
 pub fn load_animated(path: &Path) -> ImageResult<DecodedImage> {
@@ -181,5 +226,16 @@ mod tests {
         let decoded = load_animated(&path).expect("decode tiny PNG regression fixture");
         assert_eq!(decoded.frames.len(), 1);
         assert_eq!(decoded.first().image.dimensions(), (19, 24));
+    }
+
+    #[test]
+    fn avif_uses_the_bundled_decoder() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("avif-test.avif");
+        let decoded = load_animated(&path).expect("decode AVIF fixture");
+        assert_eq!(decoded.frames.len(), 1);
+        assert_eq!(decoded.first().image.dimensions(), (2, 2));
     }
 }

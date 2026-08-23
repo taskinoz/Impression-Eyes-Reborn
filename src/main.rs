@@ -12,7 +12,7 @@ use std::{
 };
 
 use image::RgbaImage;
-use navigation::{images_in_folder, same_path};
+use navigation::{images_in_folder, is_supported_image, same_path};
 use thumbnails::ThumbnailOverlay;
 use windows::{
     core::{w, PCWSTR},
@@ -121,6 +121,7 @@ struct AppState {
     rotation_quarters: u8,
     original_width: u32,
     original_height: u32,
+    startup_error: Option<String>,
 }
 
 struct ScaledCache {
@@ -161,6 +162,7 @@ static STATE: Mutex<AppState> = Mutex::new(AppState {
     rotation_quarters: 0,
     original_width: START_WIDTH as u32,
     original_height: START_HEIGHT as u32,
+    startup_error: None,
 });
 
 fn main() -> windows::core::Result<()> {
@@ -200,9 +202,9 @@ fn main() -> windows::core::Result<()> {
             load_image(hwnd, path);
         } else {
             render(hwnd);
+            let _ = ShowWindow(hwnd, SW_SHOW);
         }
         center_on_focused_monitor(hwnd, previously_focused);
-        let _ = ShowWindow(hwnd, SW_SHOW);
 
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).as_bool() {
@@ -404,6 +406,19 @@ unsafe extern "system" fn window_proc(
 }
 
 fn load_image(hwnd: HWND, path: PathBuf) {
+    if !is_supported_image(&path) {
+        show_drop_error(
+            hwnd,
+            format!(
+                "{} isn't a supported image format",
+                path.extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(|extension| format!(".{extension}"))
+                    .unwrap_or_else(|| "This file".to_string())
+            ),
+        );
+        return;
+    }
     let already_loaded = STATE
         .lock()
         .map(|mut state| {
@@ -442,6 +457,7 @@ fn load_image(hwnd: HWND, path: PathBuf) {
         state.animation_index = 0;
         state.zoom = 1.0;
         state.rotation_quarters = 0;
+        state.startup_error = None;
         state.files = files;
         state.current = current;
         state.overlay_name = display_name(&path);
@@ -464,6 +480,7 @@ fn load_image(hwnd: HWND, path: PathBuf) {
         return;
     };
 
+    let has_preview = preview.is_some();
     if let Some(preview) = preview {
         unsafe {
             let (width, height) =
@@ -477,7 +494,9 @@ fn load_image(hwnd: HWND, path: PathBuf) {
     }
     unsafe {
         announce_file(hwnd, &path);
-        render(hwnd);
+        if has_preview {
+            render(hwnd);
+        }
     }
     // Thumbnail decoding and the full-resolution decode deliberately start as
     // independent jobs. Neither can hold up the UI thread or the other job.
@@ -907,8 +926,32 @@ fn decode_selected_image(hwnd: HWND, path: PathBuf, generation: u64) {
         if !still_current {
             return;
         }
-        let Ok(decoded) = decoder::load_animated(&path) else {
-            return;
+        let decoded = match decoder::load_animated(&path) {
+            Ok(decoded) => decoded,
+            Err(_) => {
+                let accepted = STATE
+                    .lock()
+                    .map(|mut state| {
+                        if state.navigation_generation != generation {
+                            return false;
+                        }
+                        state.startup_error = Some(format!(
+                            "Couldn't open {}. The file may be damaged.",
+                            display_name(&path).unwrap_or_else(|| "this image".to_string())
+                        ));
+                        true
+                    })
+                    .unwrap_or(false);
+                if accepted {
+                    unsafe {
+                        let hwnd = HWND(hwnd_value as *mut _);
+                        if IsWindow(hwnd).as_bool() {
+                            let _ = PostMessageW(hwnd, WM_IMAGE_READY, WPARAM(0), LPARAM(0));
+                        }
+                    }
+                }
+                return;
+            }
         };
         let accepted = STATE
             .lock()
@@ -964,7 +1007,35 @@ fn apply_pending_image(hwnd: HWND) {
         unsafe {
             resize_around_center(hwnd, width, height);
             render(hwnd);
+            let _ = ShowWindow(hwnd, SW_SHOW);
             schedule_animation(hwnd, animated, first_delay);
+        }
+    } else {
+        let should_show_error = STATE
+            .lock()
+            .map(|state| state.image.is_none() && state.startup_error.is_some())
+            .unwrap_or(false);
+        if should_show_error {
+            unsafe {
+                render(hwnd);
+                let _ = ShowWindow(hwnd, SW_SHOW);
+            }
+        }
+    }
+}
+
+fn show_drop_error(hwnd: HWND, message: String) {
+    let show_drop_zone = STATE
+        .lock()
+        .map(|mut state| {
+            state.startup_error = Some(message);
+            state.image.is_none()
+        })
+        .unwrap_or(false);
+    if show_drop_zone {
+        unsafe {
+            render(hwnd);
+            let _ = ShowWindow(hwnd, SW_SHOW);
         }
     }
 }
@@ -1062,6 +1133,7 @@ unsafe fn render(hwnd: HWND) {
         zoom,
         rotation_quarters,
         thumbnails,
+        startup_error,
     ) = {
         let Ok(state) = STATE.lock() else { return };
         (
@@ -1073,6 +1145,7 @@ unsafe fn render(hwnd: HWND) {
             state.zoom,
             state.rotation_quarters,
             state.thumbnails.clone(),
+            state.startup_error.clone(),
         )
     };
     let mut bounds = RECT::default();
@@ -1166,7 +1239,7 @@ unsafe fn render(hwnd: HWND) {
     std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast(), pixels.len());
     let old = SelectObject(memory_dc, bitmap);
     if show_startup_help {
-        draw_startup_helper(memory_dc, width, height);
+        draw_startup_helper(memory_dc, width, height, startup_error.as_deref());
     } else if let Some(name) = display_label {
         draw_filename(memory_dc, width, &name);
     }
@@ -1374,7 +1447,7 @@ fn paint_square(pixels: &mut [u8], width: i32, height: i32, x: i32, y: i32, colo
     }
 }
 
-unsafe fn draw_startup_helper(dc: HDC, width: i32, height: i32) {
+unsafe fn draw_startup_helper(dc: HDC, width: i32, height: i32, error: Option<&str>) {
     let _ = SetBkMode(dc, TRANSPARENT);
     let title_font = CreateFontW(
         -24,
@@ -1414,8 +1487,13 @@ unsafe fn draw_startup_helper(dc: HDC, width: i32, height: i32) {
     draw_centered_text(dc, "Drop an image", 74, 116, width);
 
     let _ = SelectObject(dc, body_font);
-    let _ = SetTextColor(dc, COLORREF(0x00aaa29a));
-    draw_centered_text(dc, "Drag and drop a supported image file", 118, 154, width);
+    if let Some(error) = error {
+        let _ = SetTextColor(dc, COLORREF(0x006b7cff));
+        draw_centered_text(dc, error, 116, 166, width);
+    } else {
+        let _ = SetTextColor(dc, COLORREF(0x00aaa29a));
+        draw_centered_text(dc, "Drag and drop a supported image file", 118, 154, width);
+    }
     let _ = SetTextColor(dc, COLORREF(0x00a78b62));
     draw_centered_text(
         dc,

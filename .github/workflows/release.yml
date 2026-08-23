@@ -44,6 +44,8 @@ jobs:
 
       - name: Build optimized executable
         shell: pwsh
+        env:
+          CARGO_BUILD_JOBS: 4
         run: cargo build --release --locked
 
       - name: Package release

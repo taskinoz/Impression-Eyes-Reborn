@@ -7,7 +7,7 @@ The viewer should remain a small, offline executable. Update discovery, download
 | Channel | Package | Update mechanism |
 | --- | --- | --- |
 | Microsoft Store | MSIX | Microsoft Store updates only |
-| Portable | Versioned ZIP containing `ime-reborn.exe` | No automatic updater; replace the folder manually |
+| Portable | ZIP containing `ime-reborn.exe` | No automatic updater; replace the folder manually |
 | Installed | Per-user installer | Separate `ime-reborn-updater.exe` scheduled task |
 
 All three channels should be built from the same signed tag and contain the same viewer functionality. Store installations must not install or run the GitHub updater.
@@ -43,8 +43,8 @@ The updater should normally have no tray icon or resident process. An “Check f
 Every tagged GitHub release should publish:
 
 ```text
-ime-reborn-v0.2.0-windows-x86_64.zip       portable package
-ime-reborn-v0.2.0-windows-x86_64-setup.exe installed package
+ime-reborn-windows-x86_64.zip              portable package
+ime-reborn-windows-x86_64-setup.exe        installed package
 ime-reborn-update.json                     updater manifest
 SHA256SUMS.txt
 SHA256SUMS.txt.minisig                      signature
@@ -64,13 +64,13 @@ Example manifest:
   "version": "0.2.0",
   "published": "2026-08-02T12:00:00Z",
   "minimum_updater": "0.1.0",
-  "installer_url": "https://github.com/taskinoz/Impression-Eyes-Reborn/releases/download/v0.2.0/ime-reborn-v0.2.0-windows-x86_64-setup.exe",
+  "installer_url": "https://github.com/taskinoz/Impression-Eyes-Reborn/releases/download/v0.2.0/ime-reborn-windows-x86_64-setup.exe",
   "installer_sha256": "hex digest here",
   "notes_url": "https://github.com/taskinoz/Impression-Eyes-Reborn/releases/tag/v0.2.0"
 }
 ```
 
-The manifest must contain an immutable, versioned asset URL. Do not place a mutable `latest` URL in `installer_url`. Generate the manifest and hashes in the release workflow so the version, filenames and digest cannot drift apart.
+The manifest must contain an immutable, tag-specific asset URL. The asset filename stays stable so the website can use GitHub's permanent `latest/download` links without publishing duplicate files. Do not place a mutable `latest` URL in `installer_url`. Generate the manifest and hashes in the release workflow so the version, filename and digest cannot drift apart.
 
 ## Updater behaviour
 

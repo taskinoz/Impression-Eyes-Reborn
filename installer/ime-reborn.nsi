@@ -74,6 +74,9 @@ Section "ime-reborn viewer (required)" ViewerSection
   Call EnsureViewerClosed
   SetOutPath "$INSTDIR"
   File /oname=ime-reborn.exe "${VIEWER_EXE}"
+  FileOpen $0 "$INSTDIR\current-version.txt" w
+  FileWrite $0 "${VERSION}$\r$\n"
+  FileClose $0
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   CreateDirectory "$SMPROGRAMS\ime-reborn"
@@ -102,6 +105,7 @@ SectionEnd
 Section /o "Automatic update checks" UpdaterSection
   SetOutPath "$INSTDIR"
   File /oname=ime-reborn-updater.exe "${UPDATER_EXE}"
+  CreateShortcut "$SMPROGRAMS\ime-reborn\Check for updates.lnk" "$INSTDIR\ime-reborn-updater.exe" "--interactive" "$INSTDIR\ime-reborn-updater.exe" 0
   ExecWait '$\"$INSTDIR\ime-reborn-updater.exe$\" --install-task' $0
   ${If} $0 != 0
     DetailPrint "The updater was installed, but scheduled-task registration returned $0."
@@ -176,6 +180,7 @@ Section "Uninstall"
 
   IfFileExists "$INSTDIR\ime-reborn-updater.exe" 0 updater_removed
     ExecWait '$\"$INSTDIR\ime-reborn-updater.exe$\" --remove-task' $0
+    Delete "$SMPROGRAMS\ime-reborn\Check for updates.lnk"
     Delete "$INSTDIR\ime-reborn-updater.exe"
   updater_removed:
 
@@ -218,6 +223,7 @@ Section "Uninstall"
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
 
   Delete "$INSTDIR\ime-reborn.exe"
+  Delete "$INSTDIR\current-version.txt"
   Delete "$INSTDIR\uninstall.exe"
   Delete "$SMPROGRAMS\ime-reborn\ime-reborn.lnk"
   Delete "$SMPROGRAMS\ime-reborn\Uninstall ime-reborn.lnk"

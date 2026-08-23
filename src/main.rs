@@ -78,8 +78,9 @@ const ZOOM_RENDER_TIMER: usize = 3;
 const WM_THUMBNAILS_READY: u32 = 0x8001;
 const WM_IMAGE_READY: u32 = 0x8002;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 enum Background {
+    #[default]
     Black,
     White,
     Checkerboard,
@@ -92,12 +93,6 @@ impl Background {
             Self::White => Self::Checkerboard,
             Self::Checkerboard => Self::Black,
         }
-    }
-}
-
-impl Default for Background {
-    fn default() -> Self {
-        Self::Black
     }
 }
 
@@ -793,7 +788,7 @@ fn rotate_image(hwnd: HWND, counter_clockwise: bool) {
 }
 
 fn oriented_dimensions(width: u32, height: u32, rotation_quarters: u8) -> (u32, u32) {
-    if rotation_quarters % 2 == 0 {
+    if rotation_quarters.is_multiple_of(2) {
         (width, height)
     } else {
         (height, width)
@@ -1123,7 +1118,7 @@ unsafe fn render(hwnd: HWND) {
     }
 
     // DIB sections use BGRA. Layered windows also require premultiplied alpha.
-    for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+    for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let source_alpha = pixel[3] as u16;
         if transparent {
             pixel[0] = (pixel[0] as u16 * source_alpha / 255) as u8;

@@ -16,7 +16,7 @@ makensis.exe /DVERSION=0.1.0 /DVIEWER_EXE="$PWD\target\release\ime-reborn.exe" i
 
 The output is `dist\ime-reborn-v0.1.0-windows-x86_64-setup.exe`.
 
-After the secure updater binary exists, include the default-off update option with:
+Include the default-off update option with:
 
 ```powershell
 makensis.exe /DVERSION=0.1.0 `
@@ -25,7 +25,7 @@ makensis.exe /DVERSION=0.1.0 `
   installer\ime-reborn.nsi
 ```
 
-The updater must implement `--install-task` and `--remove-task`. The installer deliberately hides the option until that executable is supplied.
+The updater implements `--install-task`, `--remove-task`, `--scheduled`, and `--interactive`. The installer hides the update component when that executable is not supplied, which keeps portable and Store packaging updater-free.
 
 ## Silent installation
 

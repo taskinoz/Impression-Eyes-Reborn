@@ -151,7 +151,7 @@ impl ThumbnailOverlay {
         if width <= 0 || height <= 0 {
             return;
         }
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel[0] = (pixel[0] as u16 * 42 / 100) as u8;
             pixel[1] = (pixel[1] as u16 * 42 / 100) as u8;
             pixel[2] = (pixel[2] as u16 * 42 / 100) as u8;

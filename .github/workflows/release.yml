@@ -55,7 +55,7 @@ jobs:
             $version = "manual-${{ github.run_number }}"
           }
 
-          $archiveName = "ime-reborn-$version-windows-x86_64"
+          $archiveName = "ime-reborn-windows-x86_64"
           $stage = Join-Path "dist" $archiveName
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item -LiteralPath "target\release\ime-reborn.exe" -Destination $stage
@@ -64,11 +64,9 @@ jobs:
 
           $zip = Join-Path "dist" "$archiveName.zip"
           Compress-Archive -Path "$stage\*" -DestinationPath $zip -CompressionLevel Optimal
-          $stableZip = Join-Path "dist" "ime-reborn-windows-x86_64.zip"
-          Copy-Item -LiteralPath $zip -Destination $stableZip
 
           $checksum = Join-Path "dist" "SHA256SUMS.txt"
-          $files = @("target\release\ime-reborn.exe", $zip, $stableZip)
+          $files = @("target\release\ime-reborn.exe", $zip)
           foreach ($file in $files) {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
             $name = Split-Path -Leaf $file
@@ -76,7 +74,6 @@ jobs:
           }
 
           "zip=$zip" >> $env:GITHUB_OUTPUT
-          "stable_zip=$stableZip" >> $env:GITHUB_OUTPUT
           "exe=target\release\ime-reborn.exe" >> $env:GITHUB_OUTPUT
           "checksum=$checksum" >> $env:GITHUB_OUTPUT
 
@@ -97,19 +94,37 @@ jobs:
           if (-not $compiler) { throw "makensis.exe was not installed" }
 
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          & $compiler /V2 "/DVERSION=$version" "/DVIEWER_EXE=$PWD\target\release\ime-reborn.exe" installer\ime-reborn.nsi
+          & $compiler /V2 "/DVERSION=$version" "/DVIEWER_EXE=$PWD\target\release\ime-reborn.exe" "/DUPDATER_EXE=$PWD\target\release\ime-reborn-updater.exe" installer\ime-reborn.nsi
           if ($LASTEXITCODE -ne 0) { throw "NSIS compilation failed with exit code $LASTEXITCODE" }
 
           $setup = "dist\ime-reborn-v$version-windows-x86_64-setup.exe"
           if (-not (Test-Path -LiteralPath $setup)) { throw "NSIS output was not created" }
           $stableSetup = "dist\ime-reborn-windows-x86_64-setup.exe"
           Copy-Item -LiteralPath $setup -Destination $stableSetup
-          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setup).Hash.ToLowerInvariant()
-          "$hash  $(Split-Path -Leaf $setup)" | Add-Content -LiteralPath "dist\SHA256SUMS.txt"
           $stableHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stableSetup).Hash.ToLowerInvariant()
           "$stableHash  $(Split-Path -Leaf $stableSetup)" | Add-Content -LiteralPath "dist\SHA256SUMS.txt"
-          "setup=$setup" >> $env:GITHUB_OUTPUT
           "stable_setup=$stableSetup" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "sha256=$stableHash" >> $env:GITHUB_OUTPUT
+
+      - name: Generate updater manifest
+        id: update_manifest
+        shell: pwsh
+        run: |
+          $version = "${{ steps.installer.outputs.version }}"
+          $tag = "v$version"
+          $manifest = [ordered]@{
+            schema = 1
+            version = $version
+            published = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            minimum_updater = "0.1.0"
+            installer_url = "https://github.com/taskinoz/Impression-Eyes-Reborn/releases/download/$tag/ime-reborn-windows-x86_64-setup.exe"
+            installer_sha256 = "${{ steps.installer.outputs.sha256 }}"
+            notes_url = "https://github.com/taskinoz/Impression-Eyes-Reborn/releases/tag/$tag"
+          }
+          $path = "dist\ime-reborn-update.json"
+          $manifest | ConvertTo-Json | Set-Content -LiteralPath $path -Encoding utf8NoBOM
+          "path=$path" >> $env:GITHUB_OUTPUT
 
       - name: Build Microsoft Store package
         if: vars.MSIX_IDENTITY_NAME != '' && vars.MSIX_PUBLISHER != '' && vars.MSIX_PUBLISHER_DISPLAY_NAME != ''
@@ -136,10 +151,9 @@ jobs:
           name: ime-reborn-${{ github.ref_name }}-windows-x86_64
           path: |
             ${{ steps.package.outputs.zip }}
-            ${{ steps.package.outputs.stable_zip }}
             ${{ steps.package.outputs.exe }}
-            ${{ steps.installer.outputs.setup }}
             ${{ steps.installer.outputs.stable_setup }}
+            ${{ steps.update_manifest.outputs.path }}
             ${{ steps.package.outputs.checksum }}
             dist/*.msix
             dist/*.msixupload
@@ -154,10 +168,9 @@ jobs:
           $tag = "${{ github.ref_name }}"
           $assets = @(
             "${{ steps.package.outputs.zip }}",
-            "${{ steps.package.outputs.stable_zip }}",
             "${{ steps.package.outputs.exe }}",
-            "${{ steps.installer.outputs.setup }}",
             "${{ steps.installer.outputs.stable_setup }}",
+            "${{ steps.update_manifest.outputs.path }}",
             "${{ steps.package.outputs.checksum }}"
           )
           $assets += Get-ChildItem -Path "dist\*.msix", "dist\*.msixupload" -ErrorAction SilentlyContinue |
@@ -165,6 +178,14 @@ jobs:
 
           gh release view $tag 2>$null
           if ($LASTEXITCODE -eq 0) {
+            $version = "${{ steps.installer.outputs.version }}"
+            $duplicates = @(
+              "ime-reborn-$tag-windows-x86_64.zip",
+              "ime-reborn-v$version-windows-x86_64-setup.exe"
+            )
+            foreach ($duplicate in $duplicates) {
+              gh release delete-asset $tag $duplicate --yes 2>$null
+            }
             gh release upload $tag @assets --clobber
           } else {
             gh release create $tag @assets --title "ime-reborn $tag" --generate-notes --verify-tag

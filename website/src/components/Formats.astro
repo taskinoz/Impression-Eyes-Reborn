@@ -1,0 +1,53 @@
+---
+const formats = [
+  { name: "AVIF", extensions: [".avif"], note: "Modern AV1 image", tone: "cyan" },
+  { name: "BMP", extensions: [".bmp"], note: "Windows bitmap" },
+  { name: "DDS", extensions: [".dds"], note: "DirectDraw surface" },
+  { name: "Farbfeld", extensions: [".ff"], note: "Lossless RGBA" },
+  { name: "GIF", extensions: [".gif"], note: "Animated", animated: true, tone: "coral" },
+  { name: "ICO", extensions: [".ico"], note: "Windows icon" },
+  { name: "JPEG", extensions: [".jpg", ".jpeg"], note: "Everyday photos" },
+  {
+    name: "JPEG XL",
+    extensions: [".jxl"],
+    note: "Modern + animated",
+    animated: true,
+    tone: "cyan",
+  },
+  { name: "PNG", extensions: [".png"], note: "PNG + APNG", animated: true, tone: "blue" },
+  { name: "PNM", extensions: [".pnm", ".pbm", ".pgm", ".ppm"], note: "Portable anymap" },
+  { name: "QOI", extensions: [".qoi"], note: "Quite OK Image" },
+  { name: "TGA", extensions: [".tga"], note: "Targa image" },
+  { name: "TIFF", extensions: [".tif", ".tiff"], note: "Tagged image" },
+  { name: "WebP", extensions: [".webp"], note: "Modern + animated", animated: true, tone: "coral" },
+];
+---
+
+<section class="formats wrap" id="formats" aria-labelledby="formats-title">
+  <div class="formats-heading">
+    <div>
+      <p class="eyebrow">Wide format support</p>
+      <h2 id="formats-title">Open more.<br>Wait less.</h2>
+    </div>
+    <p class="formats-intro">
+      From everyday photos to modern codecs and game textures—open 14 image families and 20 file
+      extensions without turning the viewer into a toolbox.
+    </p>
+  </div>
+
+  <ul class="format-grid" aria-label="Supported image formats and file extensions">
+    {formats.map((format, index) => (
+        <li class:list={["format-card", format.tone && `format-card-${format.tone}`]}>
+          <div class="format-card-topline">
+            <span class="format-number">{String(index + 1).padStart(2, "0")}</span>
+            {format.animated && <span class="format-motion">Motion</span>}
+          </div>
+          <h3>{format.name}</h3>
+          <p>{format.note}</p>
+          <div class="extension-list">
+            {format.extensions.map((extension) => <code>{extension}</code>)}
+          </div>
+        </li>
+      ))}
+  </ul>
+</section>

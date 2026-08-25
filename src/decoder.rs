@@ -1,7 +1,7 @@
 use std::{fs, fs::File, io::BufReader, path::Path, sync::Arc};
 
 use image::{
-    codecs::{gif::GifDecoder, webp::WebPDecoder},
+    codecs::{gif::GifDecoder, png::PngDecoder, webp::WebPDecoder},
     io::Reader as ImageReader,
     AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageResult, RgbaImage,
 };
@@ -193,6 +193,15 @@ pub fn load_animated(path: &Path) -> ImageResult<DecodedImage> {
                 load_static(path)
             }
         }
+        Some(ImageFormat::Png) => {
+            let mut decoder = PngDecoder::new(BufReader::new(File::open(path)?))?;
+            decoder.set_limits(decoder_limits())?;
+            if decoder.is_apng() {
+                collect_frames(decoder.apng().into_frames())
+            } else {
+                load_static(path)
+            }
+        }
         _ => load_static(path),
     }
 }
@@ -293,6 +302,38 @@ mod tests {
         assert_eq!(decoded.frames.len(), 2);
         assert_eq!(decoded.frames[0].delay_ms, 40);
         assert_eq!(decoded.frames[1].delay_ms, 80);
+    }
+
+    #[test]
+    fn animated_png_preserves_frames_and_delays() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("ime-reborn-{unique}.png"));
+        let file = File::create(&path).expect("create APNG fixture");
+        let mut encoder = png::Encoder::new(file, 2, 2);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_animated(2, 0).expect("configure APNG frames");
+        let mut writer = encoder.write_header().expect("write APNG header");
+        writer.set_frame_delay(4, 100).expect("set first delay");
+        writer
+            .write_image_data(&[255, 0, 0, 255].repeat(4))
+            .expect("encode first APNG frame");
+        writer.set_frame_delay(8, 100).expect("set second delay");
+        writer
+            .write_image_data(&[0, 0, 255, 255].repeat(4))
+            .expect("encode second APNG frame");
+        writer.finish().expect("finish APNG fixture");
+
+        let decoded = load_animated(&path).expect("decode APNG fixture");
+        fs::remove_file(&path).expect("remove APNG fixture");
+        assert_eq!(decoded.frames.len(), 2);
+        assert_eq!(decoded.frames[0].delay_ms, 40);
+        assert_eq!(decoded.frames[1].delay_ms, 80);
+        assert_eq!(decoded.frames[0].image.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(decoded.frames[1].image.get_pixel(0, 0).0, [0, 0, 255, 255]);
     }
 
     #[test]

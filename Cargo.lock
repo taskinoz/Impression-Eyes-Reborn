@@ -379,12 +379,13 @@ dependencies = [
 
 [[package]]
 name = "impression-eyes-reborn"
-version = "1.3.1"
+version = "1.4.0"
 dependencies = [
  "image",
  "jxl-oxide",
  "libaom-sys",
  "libavif",
+ "png",
  "semver",
  "serde",
  "serde_json",

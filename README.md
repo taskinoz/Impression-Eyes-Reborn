@@ -19,8 +19,8 @@ The first Windows prototype implements the core overlay workflow:
 
 - a tiny, borderless native Win32 window;
 - images opened from the command line or dropped onto the window;
-- native-size BMP, DDS, Farbfeld, GIF, ICO, JPEG, PNG, PNM, QOI, TGA, TIFF,
-  and WebP decoding;
+- native-size AVIF, BMP, DDS, Farbfeld, GIF, ICO, JPEG, JPEG XL, PNG, PNM,
+  QOI, TGA, TIFF, and WebP decoding;
 - timed animated GIF and animated WebP playback;
 - per-pixel image transparency toggled with `F7`;
 - always-on-top mode toggled with `F8`;

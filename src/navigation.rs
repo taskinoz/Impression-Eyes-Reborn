@@ -47,6 +47,7 @@ pub fn is_supported_image(path: &Path) -> bool {
                 | "ico"
                 | "jpg"
                 | "jpeg"
+                | "jxl"
                 | "pbm"
                 | "pgm"
                 | "png"
@@ -83,6 +84,7 @@ mod tests {
         assert!(is_supported_image(Path::new("photo.PNG")));
         assert!(is_supported_image(Path::new("photo.jpeg")));
         assert!(is_supported_image(Path::new("photo.AVIF")));
+        assert!(is_supported_image(Path::new("photo.JXL")));
         assert!(!is_supported_image(Path::new("notes.txt")));
     }
 

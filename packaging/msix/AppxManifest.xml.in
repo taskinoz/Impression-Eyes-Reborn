@@ -57,6 +57,7 @@
               <uap:FileType>.ico</uap:FileType>
               <uap:FileType>.jpg</uap:FileType>
               <uap:FileType>.jpeg</uap:FileType>
+              <uap:FileType>.jxl</uap:FileType>
               <uap:FileType>.pbm</uap:FileType>
               <uap:FileType>.pgm</uap:FileType>
               <uap:FileType>.png</uap:FileType>

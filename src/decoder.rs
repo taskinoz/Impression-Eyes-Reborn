@@ -8,7 +8,7 @@ use image::{
 
 const MAX_IMAGE_DIMENSION: u32 = 32_768;
 const MAX_DECODER_ALLOCATION: u64 = 256 * 1024 * 1024;
-const MAX_AVIF_FILE_SIZE: u64 = 256 * 1024 * 1024;
+const MAX_SPECIAL_FORMAT_FILE_SIZE: u64 = 256 * 1024 * 1024;
 const MAX_ANIMATION_FRAMES: usize = 512;
 const DEFAULT_FRAME_DELAY_MS: u32 = 100;
 const MIN_FRAME_DELAY_MS: u32 = 10;
@@ -32,6 +32,9 @@ pub fn load(path: &Path) -> ImageResult<DynamicImage> {
     if is_avif(path) {
         return load_avif(path).map(DynamicImage::ImageRgba8);
     }
+    if is_jpeg_xl(path) {
+        return load_jpeg_xl(path).map(DynamicImage::ImageRgba8);
+    }
     let mut reader = ImageReader::open(path)?.with_guessed_format()?;
     reader.limits(decoder_limits());
     reader.decode()
@@ -43,9 +46,15 @@ fn is_avif(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("avif"))
 }
 
+fn is_jpeg_xl(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jxl"))
+}
+
 fn load_avif(path: &Path) -> ImageResult<RgbaImage> {
     let metadata = fs::metadata(path)?;
-    if metadata.len() > MAX_AVIF_FILE_SIZE {
+    if metadata.len() > MAX_SPECIAL_FORMAT_FILE_SIZE {
         return Err(image::ImageError::Limits(
             image::error::LimitError::from_kind(image::error::LimitErrorKind::InsufficientMemory),
         ));
@@ -76,6 +85,95 @@ fn load_avif(path: &Path) -> ImageResult<RgbaImage> {
             "AVIF decoder returned an invalid RGBA buffer length".to_string(),
         ))
     })
+}
+
+fn load_jpeg_xl(path: &Path) -> ImageResult<RgbaImage> {
+    if fs::metadata(path)?.len() > MAX_SPECIAL_FORMAT_FILE_SIZE {
+        return Err(image::ImageError::Limits(
+            image::error::LimitError::from_kind(image::error::LimitErrorKind::InsufficientMemory),
+        ));
+    }
+
+    let mut image = jxl_oxide::JxlImage::builder()
+        .open(path)
+        .map_err(jpeg_xl_decode_error)?;
+    validate_rgba_dimensions(image.width(), image.height())?;
+    image.request_color_encoding(jxl_oxide::EnumColourEncoding::srgb(
+        jxl_oxide::RenderingIntent::Relative,
+    ));
+    let render = image.render_frame(0).map_err(jpeg_xl_decode_error)?;
+    let mut stream = render.stream();
+    let width = stream.width();
+    let height = stream.height();
+    let channels = stream.channels();
+    validate_rgba_dimensions(width, height)?;
+    if !(1..=4).contains(&channels) {
+        return Err(jpeg_xl_decode_error(format!(
+            "unsupported JPEG XL channel count: {channels}"
+        )));
+    }
+
+    let sample_count = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(u64::from(channels)))
+        .and_then(|samples| usize::try_from(samples).ok())
+        .ok_or_else(|| {
+            image::ImageError::Limits(image::error::LimitError::from_kind(
+                image::error::LimitErrorKind::InsufficientMemory,
+            ))
+        })?;
+    let mut samples = vec![0_u8; sample_count];
+    if stream.write_to_buffer(&mut samples) != sample_count {
+        return Err(jpeg_xl_decode_error(
+            "JPEG XL decoder returned an incomplete pixel buffer",
+        ));
+    }
+
+    let pixel_count = usize::try_from(u64::from(width) * u64::from(height)).map_err(|_| {
+        image::ImageError::Limits(image::error::LimitError::from_kind(
+            image::error::LimitErrorKind::InsufficientMemory,
+        ))
+    })?;
+    let mut rgba = Vec::with_capacity(pixel_count * 4);
+    for pixel in samples.chunks_exact(channels as usize) {
+        match pixel {
+            [gray] => rgba.extend_from_slice(&[*gray, *gray, *gray, 255]),
+            [gray, alpha] => rgba.extend_from_slice(&[*gray, *gray, *gray, *alpha]),
+            [red, green, blue] => rgba.extend_from_slice(&[*red, *green, *blue, 255]),
+            [red, green, blue, alpha] => {
+                rgba.extend_from_slice(&[*red, *green, *blue, *alpha]);
+            }
+            _ => unreachable!("channel count was validated"),
+        }
+    }
+    RgbaImage::from_raw(width, height, rgba)
+        .ok_or_else(|| jpeg_xl_decode_error("invalid JPEG XL RGBA buffer length"))
+}
+
+fn validate_rgba_dimensions(width: u32, height: u32) -> ImageResult<()> {
+    if width == 0
+        || height == 0
+        || width > MAX_IMAGE_DIMENSION
+        || height > MAX_IMAGE_DIMENSION
+        || u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .is_none_or(|bytes| bytes > MAX_DECODER_ALLOCATION)
+    {
+        return Err(image::ImageError::Limits(
+            image::error::LimitError::from_kind(image::error::LimitErrorKind::DimensionError),
+        ));
+    }
+    Ok(())
+}
+
+fn jpeg_xl_decode_error(
+    error: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+) -> image::ImageError {
+    image::ImageError::Decoding(image::error::DecodingError::new(
+        image::error::ImageFormatHint::Name("JPEG XL".to_string()),
+        error,
+    ))
 }
 
 pub fn load_animated(path: &Path) -> ImageResult<DecodedImage> {
@@ -237,5 +335,17 @@ mod tests {
         let decoded = load_animated(&path).expect("decode AVIF fixture");
         assert_eq!(decoded.frames.len(), 1);
         assert_eq!(decoded.first().image.dimensions(), (2, 2));
+    }
+
+    #[test]
+    fn jpeg_xl_uses_the_pure_rust_decoder() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("jxl-test.jxl");
+        let decoded = load_animated(&path).expect("decode JPEG XL fixture");
+        assert_eq!(decoded.frames.len(), 1);
+        let (width, height) = decoded.first().image.dimensions();
+        assert!(width > 0 && height > 0);
     }
 }

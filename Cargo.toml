@@ -1,6 +1,6 @@
 [package]
 name = "impression-eyes-reborn"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 description = "A tiny, frameless image overlay viewer for Windows"
 license = "MIT OR Apache-2.0"

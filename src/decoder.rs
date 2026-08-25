@@ -88,6 +88,11 @@ fn load_avif(path: &Path) -> ImageResult<RgbaImage> {
 }
 
 fn load_jpeg_xl(path: &Path) -> ImageResult<RgbaImage> {
+    let image = open_jpeg_xl(path)?;
+    render_jpeg_xl_frame(&image, 0).map(|(frame, _)| frame)
+}
+
+fn open_jpeg_xl(path: &Path) -> ImageResult<jxl_oxide::JxlImage> {
     if fs::metadata(path)?.len() > MAX_SPECIAL_FORMAT_FILE_SIZE {
         return Err(image::ImageError::Limits(
             image::error::LimitError::from_kind(image::error::LimitErrorKind::InsufficientMemory),
@@ -101,7 +106,15 @@ fn load_jpeg_xl(path: &Path) -> ImageResult<RgbaImage> {
     image.request_color_encoding(jxl_oxide::EnumColourEncoding::srgb(
         jxl_oxide::RenderingIntent::Relative,
     ));
-    let render = image.render_frame(0).map_err(jpeg_xl_decode_error)?;
+    Ok(image)
+}
+
+fn render_jpeg_xl_frame(
+    image: &jxl_oxide::JxlImage,
+    index: usize,
+) -> ImageResult<(RgbaImage, u32)> {
+    let render = image.render_frame(index).map_err(jpeg_xl_decode_error)?;
+    let duration_ticks = render.duration();
     let mut stream = render.stream();
     let width = stream.width();
     let height = stream.height();
@@ -146,8 +159,9 @@ fn load_jpeg_xl(path: &Path) -> ImageResult<RgbaImage> {
             _ => unreachable!("channel count was validated"),
         }
     }
-    RgbaImage::from_raw(width, height, rgba)
-        .ok_or_else(|| jpeg_xl_decode_error("invalid JPEG XL RGBA buffer length"))
+    let image = RgbaImage::from_raw(width, height, rgba)
+        .ok_or_else(|| jpeg_xl_decode_error("invalid JPEG XL RGBA buffer length"))?;
+    Ok((image, duration_ticks))
 }
 
 fn validate_rgba_dimensions(width: u32, height: u32) -> ImageResult<()> {
@@ -177,6 +191,9 @@ fn jpeg_xl_decode_error(
 }
 
 pub fn load_animated(path: &Path) -> ImageResult<DecodedImage> {
+    if is_jpeg_xl(path) {
+        return load_animated_jpeg_xl(path);
+    }
     let reader = ImageReader::open(path)?.with_guessed_format()?;
     match reader.format() {
         Some(ImageFormat::Gif) => {
@@ -204,6 +221,57 @@ pub fn load_animated(path: &Path) -> ImageResult<DecodedImage> {
         }
         _ => load_static(path),
     }
+}
+
+fn load_animated_jpeg_xl(path: &Path) -> ImageResult<DecodedImage> {
+    let image = open_jpeg_xl(path)?;
+    let timing = image
+        .image_header()
+        .metadata
+        .animation
+        .as_ref()
+        .map(|animation| (animation.tps_numerator, animation.tps_denominator));
+    let frame_count = image.num_loaded_keyframes().min(MAX_ANIMATION_FRAMES);
+    let mut frames = Vec::with_capacity(frame_count);
+    let mut total_bytes = 0_u64;
+    for index in 0..frame_count {
+        let (frame, duration_ticks) = render_jpeg_xl_frame(&image, index)?;
+        let frame_bytes = u64::from(frame.width())
+            .saturating_mul(u64::from(frame.height()))
+            .saturating_mul(4);
+        total_bytes = total_bytes.saturating_add(frame_bytes);
+        if total_bytes > MAX_DECODER_ALLOCATION {
+            break;
+        }
+        frames.push(DecodedFrame {
+            image: Arc::new(frame),
+            delay_ms: jpeg_xl_delay_ms(duration_ticks, timing),
+        });
+    }
+    if frames.is_empty() {
+        return Err(image::ImageError::Limits(
+            image::error::LimitError::from_kind(image::error::LimitErrorKind::InsufficientMemory),
+        ));
+    }
+    Ok(DecodedImage { frames })
+}
+
+fn jpeg_xl_delay_ms(duration_ticks: u32, timing: Option<(u32, u32)>) -> u32 {
+    let Some((ticks_per_second, tick_denominator)) = timing else {
+        return DEFAULT_FRAME_DELAY_MS;
+    };
+    if ticks_per_second == 0 || tick_denominator == 0 {
+        return DEFAULT_FRAME_DELAY_MS;
+    }
+    let numerator = u128::from(duration_ticks)
+        .saturating_mul(u128::from(tick_denominator))
+        .saturating_mul(1_000);
+    let milliseconds = numerator
+        .checked_div(u128::from(ticks_per_second))
+        .unwrap_or(u128::from(DEFAULT_FRAME_DELAY_MS));
+    u32::try_from(milliseconds)
+        .unwrap_or(u32::MAX)
+        .max(MIN_FRAME_DELAY_MS)
 }
 
 fn load_static(path: &Path) -> ImageResult<DecodedImage> {
@@ -388,5 +456,26 @@ mod tests {
         assert_eq!(decoded.frames.len(), 1);
         let (width, height) = decoded.first().image.dimensions();
         assert!(width > 0 && height > 0);
+    }
+
+    #[test]
+    fn animated_jpeg_xl_preserves_keyframes_and_timing() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("animated-jxl-test.jxl");
+        let decoded = load_animated(&path).expect("decode animated JPEG XL fixture");
+        assert!(decoded.frames.len() > 1);
+        assert!(decoded
+            .frames
+            .iter()
+            .all(|frame| frame.delay_ms >= MIN_FRAME_DELAY_MS));
+    }
+
+    #[test]
+    fn jpeg_xl_tick_timing_converts_to_milliseconds() {
+        assert_eq!(jpeg_xl_delay_ms(4, Some((100, 1))), 40);
+        assert_eq!(jpeg_xl_delay_ms(1, Some((1_000, 1))), MIN_FRAME_DELAY_MS);
+        assert_eq!(jpeg_xl_delay_ms(4, None), DEFAULT_FRAME_DELAY_MS);
     }
 }

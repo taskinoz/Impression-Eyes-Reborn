@@ -151,22 +151,19 @@ fn run_update(mode: Mode) -> Result<(), Box<dyn Error>> {
             false,
         );
     }
-    launch_after_exit(&installer, mode)?;
+    launch_installer(&installer, mode)?;
     Ok(())
 }
 
-fn launch_after_exit(installer: &Path, mode: Mode) -> Result<(), Box<dyn Error>> {
-    // Windows does not allow NSIS to replace the updater while this process is
-    // still mapped. A short-lived system command waits for us to exit first.
-    let silent = if mode == Mode::Scheduled { " /S" } else { "" };
-    let command_line = format!(
-        "timeout /T 2 /NOBREAK >NUL & \"{}\"{}",
-        installer.display(),
-        silent
-    );
-    hidden_command("cmd.exe")
-        .args(["/D", "/S", "/C", &command_line])
-        .spawn()?;
+fn launch_installer(installer: &Path, mode: Mode) -> Result<(), Box<dyn Error>> {
+    let mut command = Command::new(installer);
+    if mode == Mode::Scheduled {
+        command.arg("/S");
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+        .spawn()
+        .map_err(|error| format!("failed to open {}: {error}", installer.display()))?;
     Ok(())
 }
 

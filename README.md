@@ -1,13 +1,14 @@
 # Impression Eyes Reborn
-A new open-source, clean-room image viewer written in Rust and inspired by the
+A new open-source image viewer written in Rust and inspired by the
 user experience of Impression Eyes.
 
 ## Project Status
 
 The original application has been preserved locally as a compatibility
-reference, but it is excluded from this repository. The replacement will be
-implemented from public documentation and observable behavior rather than from
-decompiled or disassembled code.
+reference, but it is excluded from this repository. The Rust implementation began
+from public documentation and observable behavior. The thumbnail browser now also
+uses the reconstructed source supplied at `http://git.local/taskinoz/ime` as a
+behavioral and architectural reference; see [SOURCE_PORT.md](SOURCE_PORT.md).
 
 The locally preserved `ime.exe` identifies itself as Impression Eyes 1.1.2.6.
 Both preserved copies are byte-identical (MD5
@@ -57,11 +58,17 @@ the previously focused window. After launch, moving or navigating the viewer
 does not reset the position.
 
 Images keep their aspect ratio during normal resizing; hold `Ctrl` while
-resizing for freeform stretching. Hold `Shift` to open a centered thumbnail
+resizing for freeform stretching. Hold `Shift` to open a floating 7×3 thumbnail
 grid, hover an image to enlarge/select it, and release `Shift` to load it.
-Full-resolution images and thumbnails decode on independent background workers.
-The grid appears immediately and fills progressively, prioritizing smaller,
-faster files so a single large image does not hold up the entire selector.
+Middle-click toggles the browser and commits the selection when closing it.
+While browsing, Left/Right move one image, Up/Down move seven, and the wheel
+scrolls a row in folders larger than 21 images. Home/End select the first/last
+image. Navigation wraps, and `Escape` cancels without changing the main image.
+The grid floats outside the image window and is kept within the monitor work area,
+so it also works with tiny images. It fills progressively from the selected image
+outwards. Explorer's thumbnail cache supplies supported formats, with the Rust
+decoders as a fallback. Nearby thumbnails and resized pixels are reused; obsolete
+jobs stop before decoding another file. Full-resolution decoding remains independent.
 Changing images restores that image's native
 dimensions unless it exceeds the active monitor's usable area, in which case it
 is scaled down proportionally. The filename is displayed briefly. Press `B` to

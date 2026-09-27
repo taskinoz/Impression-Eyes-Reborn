@@ -1,12 +1,16 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use image::{imageops::FilterType, RgbaImage};
 
 use crate::decoder;
 
-const COLUMNS: usize = 7;
+pub const COLUMNS: usize = 7;
 const ROWS: usize = 3;
 const MAX_ITEMS: usize = COLUMNS * ROWS;
+static DECODE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Rect {
@@ -38,6 +42,7 @@ pub struct ThumbnailItem {
     original_width: u32,
     original_height: u32,
     loaded: bool,
+    scaled: Arc<Mutex<Option<(u32, u32, Arc<RgbaImage>)>>>,
 }
 
 pub struct ImagePreview {
@@ -53,6 +58,44 @@ pub struct ThumbnailOverlay {
 }
 
 impl ThumbnailOverlay {
+    pub fn selected_index(&self, files: &[PathBuf]) -> Option<usize> {
+        self.selected_path()
+            .and_then(|path| files.iter().position(|file| *file == path))
+    }
+
+    pub fn placeholders(
+        files: &[PathBuf],
+        current: usize,
+        previous: Option<&Self>,
+    ) -> Option<Self> {
+        if files.is_empty() {
+            return None;
+        }
+        let current = current.min(files.len() - 1);
+        let count = files.len().min(MAX_ITEMS);
+        let items = (0..count)
+            .map(|slot| {
+                let index = (current + files.len() - count / 2 + slot) % files.len();
+                let path = &files[index];
+                previous
+                    .and_then(|old| old.items.iter().find(|item| item.path == *path))
+                    .cloned()
+                    .unwrap_or_else(|| ThumbnailItem {
+                        path: path.clone(),
+                        image: Arc::new(RgbaImage::new(1, 1)),
+                        original_width: 1,
+                        original_height: 1,
+                        loaded: false,
+                        scaled: Arc::new(Mutex::new(None)),
+                    })
+            })
+            .collect();
+        Some(Self {
+            items: Arc::new(items),
+            hovered: Some(count / 2),
+        })
+    }
+
     pub fn preserving_hover(mut self, previous: &Self) -> Self {
         let hovered_path = previous
             .hovered
@@ -67,67 +110,67 @@ impl ThumbnailOverlay {
     }
 
     pub fn build_progressive(
-        files: &[PathBuf],
-        current: usize,
+        initial: Self,
+        is_current: impl Fn() -> bool,
         mut publish: impl FnMut(Self) -> bool,
     ) -> Option<Self> {
-        if files.is_empty() {
+        // Serialize heavy decodes; superseded jobs exit before opening another file.
+        let _guard = DECODE_LOCK.lock().ok()?;
+        if !is_current() {
             return None;
         }
-        let start = centered_window_start(files.len(), current, MAX_ITEMS);
-        let end = (start + MAX_ITEMS).min(files.len());
-        let mut items: Vec<_> = files[start..end]
-            .iter()
-            .map(|path| ThumbnailItem {
-                path: path.clone(),
-                image: Arc::new(RgbaImage::new(1, 1)),
-                original_width: 1,
-                original_height: 1,
-                loaded: false,
-            })
-            .collect();
-        let initial = Self {
-            items: Arc::new(items.clone()),
-            hovered: None,
-        };
+        let _com = crate::shell_thumbnail::ComApartment::new();
+        let mut items = initial.items.as_ref().clone();
+        let selected = initial.hovered;
         if !publish(initial) {
             return None;
         }
 
-        // Small files generally decode fastest. Publishing those first makes
-        // the selector useful while unusually large neighbours are still
-        // being decoded.
+        // Match the original's centre-out loading: selection first, then neighbours.
         let mut decode_order: Vec<usize> = (0..items.len()).collect();
-        decode_order.sort_by_key(|index| {
-            std::fs::metadata(&items[*index].path)
-                .map(|metadata| metadata.len())
-                .unwrap_or(u64::MAX)
-        });
+        decode_order.sort_by_key(|index| index.abs_diff(selected.unwrap_or(items.len() / 2)));
         for index in decode_order {
-            if let Ok(image) = decoder::load(&items[index].path) {
-                items[index].original_width = image.width();
-                items[index].original_height = image.height();
-                items[index].image = Arc::new(image.thumbnail(160, 160).to_rgba8());
+            if !is_current() {
+                return None;
+            }
+            if items[index].loaded {
+                continue;
+            }
+            let path = &items[index].path;
+            let decoded = crate::shell_thumbnail::load(path).or_else(|| {
+                decoder::load(path).ok().map(|image| {
+                    let dimensions = (image.width(), image.height());
+                    (image.thumbnail(163, 163).to_rgba8(), dimensions)
+                })
+            });
+            if let Some((image, (width, height))) = decoded {
+                items[index].original_width = width;
+                items[index].original_height = height;
+                items[index].image = Arc::new(image);
                 items[index].loaded = true;
-                if !publish(Self {
-                    items: Arc::new(items.clone()),
-                    hovered: None,
-                }) {
-                    return None;
-                }
+            }
+            // Publish failures too, so cancellation does not depend on successful decoding.
+            if !publish(Self {
+                items: Arc::new(items.clone()),
+                hovered: selected,
+            }) {
+                return None;
             }
         }
         Some(Self {
             items: Arc::new(items),
-            hovered: None,
+            hovered: selected,
         })
     }
 
     pub fn hover(&mut self, x: i32, y: i32, width: i32, height: i32) -> bool {
         let previous = self.hovered;
-        self.hovered = layout(self.items.len(), width, height)
+        if let Some(index) = layout(self.items.len(), width, height)
             .iter()
-            .position(|rect| rect.grow(5).contains(x, y));
+            .position(|rect| rect.grow(4).contains(x, y))
+        {
+            self.hovered = Some(index);
+        }
         self.hovered != previous
     }
 
@@ -151,34 +194,40 @@ impl ThumbnailOverlay {
         if width <= 0 || height <= 0 {
             return;
         }
-        for pixel in pixels.as_chunks_mut::<4>().0 {
-            pixel[0] = (pixel[0] as u16 * 42 / 100) as u8;
-            pixel[1] = (pixel[1] as u16 * 42 / 100) as u8;
-            pixel[2] = (pixel[2] as u16 * 42 / 100) as u8;
-        }
-        for (index, (item, rect)) in self
-            .items
-            .iter()
-            .zip(layout(self.items.len(), width, height))
-            .enumerate()
-        {
-            if !item.loaded {
-                continue;
+        // Paint the enlarged selection last so neighbouring cells cannot cover it.
+        for selected_pass in [false, true] {
+            for (index, (item, rect)) in self
+                .items
+                .iter()
+                .zip(layout(self.items.len(), width, height))
+                .enumerate()
+            {
+                let hovered = self.hovered == Some(index);
+                if hovered != selected_pass {
+                    continue;
+                }
+                if !item.loaded {
+                    for y in rect.y.max(0)..(rect.y + rect.height).min(height) {
+                        for x in rect.x.max(0)..(rect.x + rect.width).min(width) {
+                            let offset = ((y * width + x) * 4) as usize;
+                            pixels[offset..offset + 4].copy_from_slice(if hovered {
+                                &[100, 120, 150, 255]
+                            } else {
+                                &[50, 50, 50, 255]
+                            });
+                        }
+                    }
+                    continue;
+                }
+                let target = if hovered {
+                    rect.grow(rect.width * 7 / 20)
+                } else {
+                    rect
+                };
+                draw_thumbnail(pixels, width, height, item, target);
             }
-            let hovered = self.hovered == Some(index);
-            let target = if hovered { rect.grow(8) } else { rect };
-            draw_thumbnail(pixels, width, height, &item.image, target);
         }
     }
-}
-
-fn centered_window_start(total: usize, current: usize, maximum: usize) -> usize {
-    if total <= maximum {
-        return 0;
-    }
-    current
-        .saturating_sub(maximum / 2)
-        .min(total.saturating_sub(maximum))
 }
 
 fn layout(count: usize, width: i32, height: i32) -> Vec<Rect> {
@@ -187,10 +236,10 @@ fn layout(count: usize, width: i32, height: i32) -> Vec<Rect> {
     }
     let columns = count.min(COLUMNS);
     let rows = count.div_ceil(columns).min(ROWS);
-    let cell = ((width - 32) / columns as i32)
-        .min((height - 32) / rows as i32)
-        .clamp(36, 112);
-    let thumb = (cell - 12).max(28);
+    let cell = ((width - 80).max(1) / columns as i32)
+        .min((height - 80).max(1) / rows as i32)
+        .clamp(1, 104);
+    let thumb = (cell - 8).max(1);
     let grid_width = columns as i32 * cell;
     let grid_height = rows as i32 * cell;
     let origin_x = (width - grid_width) / 2;
@@ -201,7 +250,10 @@ fn layout(count: usize, width: i32, height: i32) -> Vec<Rect> {
             let row = index / columns;
             Rect {
                 x: origin_x + column as i32 * cell + (cell - thumb) / 2,
-                y: origin_y + row as i32 * cell + (cell - thumb) / 2,
+                y: origin_y
+                    + row as i32 * cell
+                    + (cell - thumb) / 2
+                    + (column.min(columns - 1 - column) as i32 * 4),
                 width: thumb,
                 height: thumb,
             }
@@ -213,14 +265,36 @@ fn draw_thumbnail(
     destination: &mut [u8],
     canvas_width: i32,
     canvas_height: i32,
-    image: &RgbaImage,
+    item: &ThumbnailItem,
     rect: Rect,
 ) {
+    let image = &item.image;
     let scale = (rect.width as f64 / image.width().max(1) as f64)
         .min(rect.height as f64 / image.height().max(1) as f64);
     let width = (image.width() as f64 * scale).round().max(1.0) as u32;
     let height = (image.height() as f64 * scale).round().max(1.0) as u32;
-    let resized = image::imageops::resize(image, width, height, FilterType::Triangle);
+    let resized = {
+        let mut cache = item
+            .scaled
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((w, h, image)) = cache
+            .as_ref()
+            .filter(|(w, h, _)| *w == width && *h == height)
+        {
+            let _ = (w, h);
+            image.clone()
+        } else {
+            let resized = Arc::new(image::imageops::resize(
+                image.as_ref(),
+                width,
+                height,
+                FilterType::Triangle,
+            ));
+            *cache = Some((width, height, resized.clone()));
+            resized
+        }
+    };
     let left = rect.x + (rect.width - width as i32) / 2;
     let top = rect.y + (rect.height - height as i32) / 2;
     for (source_x, source_y, pixel) in resized.enumerate_pixels() {
@@ -230,14 +304,20 @@ fn draw_thumbnail(
             continue;
         }
         let offset = ((y * canvas_width + x) * 4) as usize;
-        let alpha = pixel[3] as u16;
+        let alpha = pixel[3] as u32;
         let inverse = 255 - alpha;
+        let background_alpha = destination[offset + 3] as u32;
+        let combined = alpha * 255 + background_alpha * inverse;
         for channel in 0..3 {
-            destination[offset + channel] = ((pixel[channel] as u16 * alpha
-                + destination[offset + channel] as u16 * inverse)
-                / 255) as u8;
+            destination[offset + channel] = if combined == 0 {
+                0
+            } else {
+                ((pixel[channel] as u32 * alpha * 255
+                    + destination[offset + channel] as u32 * background_alpha * inverse)
+                    / combined) as u8
+            };
         }
-        destination[offset + 3] = 255;
+        destination[offset + 3] = (combined / 255) as u8;
     }
 }
 
@@ -245,6 +325,82 @@ fn draw_thumbnail(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn scrolling_reuses_loaded_pixels_and_scaled_cache() {
+        let files: Vec<_> = (0..30).map(|i| PathBuf::from(format!("{i}.png"))).collect();
+        let mut old = ThumbnailOverlay::placeholders(&files, 10, None).unwrap();
+        Arc::make_mut(&mut old.items)[10].loaded = true;
+        let next = ThumbnailOverlay::placeholders(&files, 11, Some(&old)).unwrap();
+        let reused = next
+            .items
+            .iter()
+            .find(|item| item.path == files[10])
+            .unwrap();
+        assert!(reused.loaded);
+        assert!(Arc::ptr_eq(&reused.image, &old.items[10].image));
+        assert!(Arc::ptr_eq(&reused.scaled, &old.items[10].scaled));
+    }
+
+    #[test]
+    fn cancelled_job_does_not_publish_or_decode() {
+        let overlay =
+            ThumbnailOverlay::placeholders(&[PathBuf::from("missing.png")], 0, None).unwrap();
+        let result = ThumbnailOverlay::build_progressive(
+            overlay,
+            || false,
+            |_| panic!("stale job published"),
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn failed_decodes_still_check_cancellation() {
+        let overlay =
+            ThumbnailOverlay::placeholders(&[PathBuf::from("missing.png")], 0, None).unwrap();
+        let mut publications = 0;
+        let result = ThumbnailOverlay::build_progressive(
+            overlay,
+            || true,
+            |_| {
+                publications += 1;
+                publications < 2
+            },
+        );
+        assert!(result.is_none());
+        assert_eq!(publications, 2);
+    }
+
+    #[test]
+    fn transparent_thumbnail_preserves_canvas_alpha_and_scaling_is_reused() {
+        let mut overlay =
+            ThumbnailOverlay::placeholders(&[PathBuf::from("test.png")], 0, None).unwrap();
+        let item = &mut Arc::make_mut(&mut overlay.items)[0];
+        item.image = Arc::new(RgbaImage::from_pixel(1, 1, image::Rgba([200, 80, 40, 128])));
+        let mut pixels = vec![0; 16];
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        draw_thumbnail(&mut pixels, 2, 2, item, rect);
+        assert_eq!(&pixels[..4], &[200, 80, 40, 128]);
+        let first = item.scaled.lock().unwrap().as_ref().unwrap().2.clone();
+        draw_thumbnail(&mut pixels, 2, 2, item, rect);
+        assert!(Arc::ptr_eq(
+            &first,
+            &item.scaled.lock().unwrap().as_ref().unwrap().2
+        ));
+    }
+
+    #[test]
+    fn moving_between_cells_keeps_keyboard_selection() {
+        let mut overlay =
+            ThumbnailOverlay::placeholders(&[PathBuf::from("test.png")], 0, None).unwrap();
+        assert!(!overlay.hover(0, 0, 808, 404));
+        assert_eq!(overlay.selected_path(), Some(PathBuf::from("test.png")));
+    }
 
     #[test]
     fn grid_is_centered_and_limited_to_three_rows() {
@@ -258,10 +414,18 @@ mod tests {
     }
 
     #[test]
-    fn subset_stays_centered_near_current_image() {
-        assert_eq!(centered_window_start(100, 0, 21), 0);
-        assert_eq!(centered_window_start(100, 50, 21), 40);
-        assert_eq!(centered_window_start(100, 99, 21), 79);
+    fn wrapped_grid_centers_current_without_duplicates() {
+        let files: Vec<_> = (0..100)
+            .map(|index| PathBuf::from(format!("{index}.png")))
+            .collect();
+        for current in [0, 50, 99] {
+            let overlay = ThumbnailOverlay::placeholders(&files, current, None).unwrap();
+            assert_eq!(overlay.selected_index(&files), Some(current));
+            assert_eq!(overlay.items.len(), 21);
+            let unique: std::collections::HashSet<_> =
+                overlay.items.iter().map(|item| &item.path).collect();
+            assert_eq!(unique.len(), 21);
+        }
     }
 
     #[test]
@@ -284,6 +448,7 @@ mod tests {
             original_width: 1,
             original_height: 1,
             loaded: true,
+            scaled: Arc::new(Mutex::new(None)),
         };
         let overlay = ThumbnailOverlay {
             items: Arc::new(vec![item]),
@@ -301,6 +466,7 @@ mod tests {
                 original_width: 1,
                 original_height: 1,
                 loaded: true,
+                scaled: Arc::new(Mutex::new(None)),
             }]),
             hovered: None,
         };
@@ -316,6 +482,7 @@ mod tests {
                 original_width: 1,
                 original_height: 1,
                 loaded: false,
+                scaled: Arc::new(Mutex::new(None)),
             }]),
             hovered: Some(0),
         };

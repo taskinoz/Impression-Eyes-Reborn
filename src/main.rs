@@ -2,6 +2,8 @@
 
 mod decoder;
 mod navigation;
+mod picker;
+mod shell_thumbnail;
 mod thumbnails;
 
 use std::{
@@ -28,7 +30,7 @@ use windows::{
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
-            Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_SHIFT},
+            Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL},
             Shell::{
                 DragAcceptFiles, DragFinish, DragQueryFileW, SHFileOperationW, FOF_ALLOWUNDO,
                 FOF_WANTNUKEWARNING, FO_DELETE, HDROP, SHFILEOPSTRUCTW,
@@ -43,8 +45,8 @@ use windows::{
                 HWND_TOPMOST, IDC_ARROW, MB_OK, MSG, SWP_NOMOVE, SWP_NOSIZE, SW_SHOW, ULW_ALPHA,
                 WMSZ_BOTTOMLEFT, WMSZ_BOTTOMRIGHT, WMSZ_LEFT, WMSZ_RIGHT, WMSZ_TOP, WMSZ_TOPLEFT,
                 WMSZ_TOPRIGHT, WM_CREATE, WM_DESTROY, WM_DROPFILES, WM_KEYDOWN, WM_KEYUP,
-                WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCHITTEST, WM_SIZE, WM_SIZING, WM_TIMER, WNDCLASSW,
-                WS_EX_APPWINDOW, WS_EX_LAYERED, WS_POPUP,
+                WM_MBUTTONDOWN, WM_MOUSEWHEEL, WM_NCHITTEST, WM_NCMBUTTONDOWN, WM_SIZE, WM_SIZING,
+                WM_TIMER, WNDCLASSW, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_POPUP,
             },
         },
     },
@@ -62,6 +64,8 @@ const KEY_BACKSPACE: usize = 0x08;
 const KEY_DELETE: usize = 0x2e;
 const KEY_LEFT: usize = 0x25;
 const KEY_RIGHT: usize = 0x27;
+const KEY_UP: usize = 0x26;
+const KEY_DOWN: usize = 0x28;
 const KEY_F1: usize = 0x70;
 const KEY_B: usize = 0x42;
 const KEY_R: usize = 0x52;
@@ -112,6 +116,7 @@ struct AppState {
     thumbnails: Option<ThumbnailOverlay>,
     thumbnail_cache: Option<ThumbnailOverlay>,
     thumbnail_generation: u64,
+    picker_open: bool,
     navigation_generation: u64,
     pending_image: Option<PendingImage>,
     zoom: f64,
@@ -153,6 +158,7 @@ static STATE: Mutex<AppState> = Mutex::new(AppState {
     thumbnails: None,
     thumbnail_cache: None,
     thumbnail_generation: 0,
+    picker_open: false,
     navigation_generation: 0,
     pending_image: None,
     zoom: 1.0,
@@ -277,7 +283,11 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_KEYDOWN if wparam.0 == KEY_ESCAPE => {
-            PostQuitMessage(0);
+            if picker_is_open() {
+                cancel_thumbnail_overlay(hwnd);
+            } else {
+                PostQuitMessage(0);
+            }
             LRESULT(0)
         }
         WM_KEYDOWN if wparam.0 == KEY_F1 => {
@@ -295,8 +305,10 @@ unsafe extern "system" fn window_proc(
             rotate_image(hwnd, GetKeyState(VK_CONTROL.0 as i32) < 0);
             LRESULT(0)
         }
-        WM_KEYDOWN if wparam.0 == KEY_SHIFT => {
-            show_thumbnail_overlay(hwnd);
+        WM_KEYDOWN if wparam.0 == KEY_SHIFT && lparam.0 & (1 << 30) == 0 => {
+            if !picker_is_open() {
+                open_thumbnail_overlay(hwnd);
+            }
             LRESULT(0)
         }
         WM_KEYDOWN if wparam.0 == KEY_PLUS || wparam.0 == KEY_NUMPAD_PLUS => {
@@ -315,8 +327,19 @@ unsafe extern "system" fn window_proc(
             commit_thumbnail_overlay(hwnd);
             LRESULT(0)
         }
-        WM_MOUSEMOVE => {
-            hover_thumbnail(hwnd, lparam);
+        WM_MBUTTONDOWN | WM_NCMBUTTONDOWN => {
+            if picker_is_open() {
+                commit_thumbnail_overlay(hwnd);
+            } else {
+                open_thumbnail_overlay(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_KEYDOWN if picker_is_open() && matches!(wparam.0, KEY_UP | KEY_DOWN) => {
+            navigate_thumbnail_overlay(
+                hwnd,
+                Selection::Relative(if wparam.0 == KEY_UP { -7 } else { 7 }),
+            );
             LRESULT(0)
         }
         WM_KEYDOWN if wparam.0 == KEY_HOME => {
@@ -341,7 +364,19 @@ unsafe extern "system" fn window_proc(
         }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) as u16) as i16;
-            if GetKeyState(VK_CONTROL.0 as i32) < 0 {
+            if delta == 0 {
+                return LRESULT(0);
+            }
+            if picker_is_open() {
+                let step = STATE
+                    .lock()
+                    .map(|state| if state.files.len() > 21 { 7 } else { 1 })
+                    .unwrap_or(1);
+                navigate_thumbnail_overlay(
+                    hwnd,
+                    Selection::Relative(if delta > 0 { -step } else { step }),
+                );
+            } else if GetKeyState(VK_CONTROL.0 as i32) < 0 {
                 change_zoom(hwnd, 1.12_f64.powf(delta as f64 / 120.0));
             } else {
                 select_image(hwnd, Selection::Relative(if delta > 0 { -1 } else { 1 }));
@@ -377,7 +412,7 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_THUMBNAILS_READY => {
-            if GetKeyState(VK_SHIFT.0 as i32) < 0 {
+            if picker_is_open() {
                 show_thumbnail_overlay(hwnd);
             }
             LRESULT(0)
@@ -406,6 +441,7 @@ unsafe extern "system" fn window_proc(
 }
 
 fn load_image(hwnd: HWND, path: PathBuf) {
+    cancel_thumbnail_overlay(hwnd);
     if !is_supported_image(&path) {
         show_drop_error(
             hwnd,
@@ -532,10 +568,69 @@ unsafe fn resize_hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 unsafe fn show_shortcuts(hwnd: HWND) {
     let _ = MessageBoxW(
         hwnd,
-        w!("Drop image: Open\nMouse wheel / Left / Right: Browse\nSpace / Backspace: Next / previous\nDelete: Move image to Recycle Bin\nCtrl + mouse wheel or +/-: Zoom\n0: Reset zoom\nR: Rotate clockwise\nCtrl+R: Rotate counter-clockwise\nHome / End: First / last\nHold Shift: Thumbnail browser\nDrag: Move window\nEdges and corners: Resize\nCtrl + resize: Freeform stretch\nB: Cycle background\nF7: Desktop transparency\nF8: Always on top\nF1: Show this help\nEscape: Close"),
+        w!("Drop image: Open\nMouse wheel / Left / Right: Browse\nSpace / Backspace: Next / previous\nDelete: Move image to Recycle Bin\nCtrl + mouse wheel or +/-: Zoom\n0: Reset zoom\nR: Rotate clockwise\nCtrl+R: Rotate counter-clockwise\nHome / End: First / last\nHold Shift / middle-click: Thumbnail browser\nBrowser: Arrows / wheel browse; Escape cancels\nDrag: Move window\nEdges and corners: Resize\nCtrl + resize: Freeform stretch\nB: Cycle background\nF7: Desktop transparency\nF8: Always on top\nF1: Show this help\nEscape: Close"),
         w!("Impression Eyes Reborn shortcuts"),
         MB_OK,
     );
+}
+
+fn picker_is_open() -> bool {
+    STATE.lock().map(|state| state.picker_open).unwrap_or(false)
+}
+
+fn cancel_thumbnail_overlay(_hwnd: HWND) {
+    picker::close();
+    if let Ok(mut state) = STATE.lock() {
+        state.picker_open = false;
+        state.thumbnails = None;
+    }
+}
+
+fn open_thumbnail_overlay(hwnd: HWND) {
+    let setup = STATE.lock().ok().and_then(|mut state| {
+        if state.files.is_empty() {
+            return None;
+        }
+        state.picker_open = true;
+        state.thumbnails = None;
+        state.thumbnail_generation = state.thumbnail_generation.wrapping_add(1);
+        Some((
+            state.files.clone(),
+            state.current,
+            state.thumbnail_generation,
+        ))
+    });
+    if let Some((files, current, generation)) = setup {
+        preload_thumbnails(hwnd, files, current, generation);
+        show_thumbnail_overlay(hwnd);
+    }
+}
+
+fn navigate_thumbnail_overlay(hwnd: HWND, selection: Selection) {
+    let setup = STATE.lock().ok().and_then(|mut state| {
+        if state.files.is_empty() {
+            return None;
+        }
+        let current = state
+            .thumbnails
+            .as_ref()
+            .and_then(|overlay| overlay.selected_index(&state.files))
+            .unwrap_or(state.current);
+        let next = match selection {
+            Selection::First => 0,
+            Selection::Last => state.files.len() - 1,
+            Selection::Relative(delta) => {
+                (current as isize + delta).rem_euclid(state.files.len() as isize) as usize
+            }
+        };
+        state.thumbnail_generation = state.thumbnail_generation.wrapping_add(1);
+        state.thumbnails = None;
+        Some((state.files.clone(), next, state.thumbnail_generation))
+    });
+    if let Some((files, current, generation)) = setup {
+        preload_thumbnails(hwnd, files, current, generation);
+        show_thumbnail_overlay(hwnd);
+    }
 }
 
 fn show_thumbnail_overlay(hwnd: HWND) {
@@ -551,11 +646,27 @@ fn show_thumbnail_overlay(hwnd: HWND) {
         false
     };
     if activated {
-        unsafe { render(hwnd) };
+        picker::show(hwnd);
+        picker::refresh();
     }
 }
 
 fn preload_thumbnails(hwnd: HWND, files: Vec<PathBuf>, current: usize, generation: u64) {
+    let initial = {
+        let Ok(mut state) = STATE.lock() else {
+            return;
+        };
+        if state.thumbnail_generation != generation {
+            return;
+        }
+        let initial =
+            ThumbnailOverlay::placeholders(&files, current, state.thumbnail_cache.as_ref());
+        state.thumbnail_cache = initial.clone();
+        initial
+    };
+    let Some(initial) = initial else {
+        return;
+    };
     let hwnd_value = hwnd.0 as isize;
     std::thread::spawn(move || {
         let still_current = STATE
@@ -590,7 +701,16 @@ fn preload_thumbnails(hwnd: HWND, files: Vec<PathBuf>, current: usize, generatio
             }
             accepted
         };
-        let _ = ThumbnailOverlay::build_progressive(&files, current, publish);
+        let _ = ThumbnailOverlay::build_progressive(
+            initial,
+            || {
+                STATE
+                    .lock()
+                    .map(|state| state.thumbnail_generation == generation)
+                    .unwrap_or(false)
+            },
+            publish,
+        );
         let still_current = STATE
             .lock()
             .map(|state| state.thumbnail_generation == generation)
@@ -623,11 +743,15 @@ fn hover_thumbnail(hwnd: HWND, lparam: LPARAM) {
         })
         .unwrap_or(false);
     if changed {
-        unsafe { render(hwnd) };
+        picker::refresh();
     }
 }
 
 fn commit_thumbnail_overlay(hwnd: HWND) {
+    if !picker_is_open() {
+        return;
+    }
+    picker::close();
     let selection = STATE.lock().ok().map(|mut state| {
         let selected = state
             .thumbnails
@@ -635,6 +759,7 @@ fn commit_thumbnail_overlay(hwnd: HWND) {
             .and_then(ThumbnailOverlay::selected_path);
         let current = state.files.get(state.current).cloned();
         state.thumbnails = None;
+        state.picker_open = false;
         (selected, current)
     });
     match selection {
@@ -689,6 +814,7 @@ fn next_index_after_removal(removed_index: usize, remaining_count: usize) -> Opt
 }
 
 fn delete_current_image(hwnd: HWND) {
+    cancel_thumbnail_overlay(hwnd);
     let current = STATE.lock().ok().and_then(|state| {
         state
             .files
@@ -840,6 +966,10 @@ fn set_zoom(hwnd: HWND, requested: f64) {
 }
 
 fn select_image(hwnd: HWND, selection: Selection) {
+    if picker_is_open() {
+        navigate_thumbnail_overlay(hwnd, selection);
+        return;
+    }
     let (path, generation, preview, thumbnail_preload) = {
         let Ok(mut state) = STATE.lock() else { return };
         if state.files.len() < 2 {
@@ -1132,7 +1262,6 @@ unsafe fn render(hwnd: HWND) {
         overlay_name,
         zoom,
         rotation_quarters,
-        thumbnails,
         startup_error,
     ) = {
         let Ok(state) = STATE.lock() else { return };
@@ -1144,7 +1273,6 @@ unsafe fn render(hwnd: HWND) {
             state.overlay_name.clone(),
             state.zoom,
             state.rotation_quarters,
-            state.thumbnails.clone(),
             state.startup_error.clone(),
         )
     };
@@ -1186,9 +1314,6 @@ unsafe fn render(hwnd: HWND) {
             }
         }
     }
-    if let Some(overlay) = thumbnails {
-        overlay.render(&mut pixels, width, height);
-    }
 
     // DIB sections use BGRA. Layered windows also require premultiplied alpha.
     for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
@@ -1214,6 +1339,22 @@ unsafe fn render(hwnd: HWND) {
         pixel.swap(0, 2);
     }
 
+    draw_layered(hwnd, width, height, &pixels, |memory_dc| {
+        if show_startup_help {
+            draw_startup_helper(memory_dc, width, height, startup_error.as_deref());
+        } else if let Some(name) = display_label {
+            draw_filename(memory_dc, width, &name);
+        }
+    });
+}
+
+unsafe fn draw_layered(
+    hwnd: HWND,
+    width: i32,
+    height: i32,
+    pixels: &[u8],
+    labels: impl FnOnce(HDC),
+) {
     let screen = HDC::default();
     let memory_dc = CreateCompatibleDC(screen);
     let bitmap_info = BITMAPINFO {
@@ -1238,11 +1379,7 @@ unsafe fn render(hwnd: HWND) {
     }
     std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast(), pixels.len());
     let old = SelectObject(memory_dc, bitmap);
-    if show_startup_help {
-        draw_startup_helper(memory_dc, width, height, startup_error.as_deref());
-    } else if let Some(name) = display_label {
-        draw_filename(memory_dc, width, &name);
-    }
+    labels(memory_dc);
     let size = SIZE {
         cx: width,
         cy: height,

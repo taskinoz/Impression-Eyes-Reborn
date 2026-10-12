@@ -63,12 +63,17 @@ grid, hover an image to enlarge/select it, and release `Shift` to load it.
 Middle-click toggles the browser and commits the selection when closing it.
 While browsing, Left/Right move one image, Up/Down move seven, and the wheel
 scrolls a row in folders larger than 21 images. Home/End select the first/last
-image. Navigation wraps, and `Escape` cancels without changing the main image.
+image. Navigation wraps while keeping the selected slot in place; thumbnails
+slide and enlarge in three short animation steps. High-resolution wheel input
+accumulates partial notches. `Escape` cancels without changing the main image.
 The grid floats outside the image window and is kept within the monitor work area,
 so it also works with tiny images. It fills progressively from the selected image
 outwards. Explorer's thumbnail cache supplies supported formats, with the Rust
-decoders as a fallback. Nearby thumbnails and resized pixels are reused; obsolete
-jobs stop before decoding another file. Full-resolution decoding remains independent.
+decoders as a fallback. A bounded 84-entry cache reuses nearby thumbnails and
+checks file size/modification time before reuse. One persistent worker keeps only
+the latest pending request; obsolete jobs stop before decoding another file.
+The picker reuses its drawing surface and stops its animation timer when idle.
+Full-resolution decoding remains independent.
 Changing images restores that image's native
 dimensions unless it exceeds the active monitor's usable area, in which case it
 is scaled down proportionally. The filename is displayed briefly. Press `B` to

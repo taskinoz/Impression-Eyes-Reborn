@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod decoder;
+mod latest_worker;
 mod navigation;
 mod picker;
 mod shell_thumbnail;
@@ -10,7 +11,7 @@ use std::{
     env,
     ffi::OsString,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use image::RgbaImage;
@@ -117,6 +118,7 @@ struct AppState {
     thumbnail_cache: Option<ThumbnailOverlay>,
     thumbnail_generation: u64,
     picker_open: bool,
+    picker_wheel_remainder: i32,
     navigation_generation: u64,
     pending_image: Option<PendingImage>,
     zoom: f64,
@@ -159,6 +161,7 @@ static STATE: Mutex<AppState> = Mutex::new(AppState {
     thumbnail_cache: None,
     thumbnail_generation: 0,
     picker_open: false,
+    picker_wheel_remainder: 0,
     navigation_generation: 0,
     pending_image: None,
     zoom: 1.0,
@@ -368,14 +371,20 @@ unsafe extern "system" fn window_proc(
                 return LRESULT(0);
             }
             if picker_is_open() {
-                let step = STATE
+                let steps = STATE
                     .lock()
-                    .map(|state| if state.files.len() > 21 { 7 } else { 1 })
-                    .unwrap_or(1);
-                navigate_thumbnail_overlay(
-                    hwnd,
-                    Selection::Relative(if delta > 0 { -step } else { step }),
-                );
+                    .map(|mut state| {
+                        let row = if state.files.len() > 21 {
+                            thumbnails::COLUMNS as isize
+                        } else {
+                            1
+                        };
+                        -thumbnails::wheel_steps(&mut state.picker_wheel_remainder, delta) * row
+                    })
+                    .unwrap_or(0);
+                if steps != 0 {
+                    navigate_thumbnail_overlay(hwnd, Selection::Relative(steps));
+                }
             } else if GetKeyState(VK_CONTROL.0 as i32) < 0 {
                 change_zoom(hwnd, 1.12_f64.powf(delta as f64 / 120.0));
             } else {
@@ -441,6 +450,7 @@ unsafe extern "system" fn window_proc(
 }
 
 fn load_image(hwnd: HWND, path: PathBuf) {
+    let path = std::path::absolute(&path).unwrap_or(path);
     cancel_thumbnail_overlay(hwnd);
     if !is_supported_image(&path) {
         show_drop_error(
@@ -592,6 +602,7 @@ fn open_thumbnail_overlay(hwnd: HWND) {
             return None;
         }
         state.picker_open = true;
+        state.picker_wheel_remainder = 0;
         state.thumbnails = None;
         state.thumbnail_generation = state.thumbnail_generation.wrapping_add(1);
         Some((
@@ -611,10 +622,9 @@ fn navigate_thumbnail_overlay(hwnd: HWND, selection: Selection) {
         if state.files.is_empty() {
             return None;
         }
-        let current = state
-            .thumbnails
-            .as_ref()
-            .and_then(|overlay| overlay.selected_index(&state.files))
+        let previous = state.thumbnails.as_ref()?;
+        let current = previous
+            .selected_index(&state.files)
             .unwrap_or(state.current);
         let next = match selection {
             Selection::First => 0,
@@ -623,13 +633,18 @@ fn navigate_thumbnail_overlay(hwnd: HWND, selection: Selection) {
                 (current as isize + delta).rem_euclid(state.files.len() as isize) as usize
             }
         };
+        if next == current {
+            return None;
+        }
+        let initial = ThumbnailOverlay::scrolled(&state.files, next, previous)?;
         state.thumbnail_generation = state.thumbnail_generation.wrapping_add(1);
-        state.thumbnails = None;
-        Some((state.files.clone(), next, state.thumbnail_generation))
+        state.thumbnails = Some(initial.clone());
+        state.thumbnail_cache = Some(initial.clone());
+        Some((initial, state.thumbnail_generation))
     });
-    if let Some((files, current, generation)) = setup {
-        preload_thumbnails(hwnd, files, current, generation);
-        show_thumbnail_overlay(hwnd);
+    if let Some((initial, generation)) = setup {
+        queue_thumbnails(hwnd, initial, generation);
+        picker::refresh();
     }
 }
 
@@ -667,79 +682,104 @@ fn preload_thumbnails(hwnd: HWND, files: Vec<PathBuf>, current: usize, generatio
     let Some(initial) = initial else {
         return;
     };
-    let hwnd_value = hwnd.0 as isize;
-    std::thread::spawn(move || {
-        let still_current = STATE
-            .lock()
-            .map(|state| state.thumbnail_generation == generation)
-            .unwrap_or(false);
-        if !still_current {
-            return;
-        }
-        let mut last_notification = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_millis(50))
-            .unwrap_or_else(std::time::Instant::now);
-        let publish = |overlay: ThumbnailOverlay| {
-            let accepted = STATE
-                .lock()
-                .map(|mut state| {
-                    if state.thumbnail_generation != generation {
-                        return false;
-                    }
-                    state.thumbnail_cache = Some(overlay);
-                    true
-                })
-                .unwrap_or(false);
-            if accepted && last_notification.elapsed() >= std::time::Duration::from_millis(50) {
-                unsafe {
-                    let hwnd = HWND(hwnd_value as *mut _);
-                    if IsWindow(hwnd).as_bool() {
-                        let _ = PostMessageW(hwnd, WM_THUMBNAILS_READY, WPARAM(0), LPARAM(0));
-                    }
-                }
-                last_notification = std::time::Instant::now();
-            }
-            accepted
-        };
-        let _ = ThumbnailOverlay::build_progressive(
+    queue_thumbnails(hwnd, initial, generation);
+}
+
+struct ThumbnailJob {
+    hwnd_value: isize,
+    initial: ThumbnailOverlay,
+    generation: u64,
+}
+
+fn queue_thumbnails(hwnd: HWND, initial: ThumbnailOverlay, generation: u64) {
+    static WORKER: OnceLock<Option<latest_worker::LatestWorker<ThumbnailJob>>> = OnceLock::new();
+    if let Some(worker) = WORKER.get_or_init(|| {
+        let mut cache = thumbnails::ThumbnailCache::default();
+        latest_worker::LatestWorker::new("thumbnail-loader", move |job| {
+            decode_thumbnails(job, &mut cache);
+        })
+        .ok()
+    }) {
+        worker.submit(ThumbnailJob {
+            hwnd_value: hwnd.0 as isize,
             initial,
-            || {
-                STATE
-                    .lock()
-                    .map(|state| state.thumbnail_generation == generation)
-                    .unwrap_or(false)
-            },
-            publish,
-        );
-        let still_current = STATE
+            generation,
+        });
+    }
+}
+
+fn decode_thumbnails(job: ThumbnailJob, cache: &mut thumbnails::ThumbnailCache) {
+    let ThumbnailJob {
+        hwnd_value,
+        initial,
+        generation,
+    } = job;
+    let still_current = STATE
+        .lock()
+        .map(|state| state.thumbnail_generation == generation)
+        .unwrap_or(false);
+    if !still_current {
+        return;
+    }
+    let mut last_notification = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_millis(50))
+        .unwrap_or_else(std::time::Instant::now);
+    let publish = |overlay: ThumbnailOverlay| {
+        let accepted = STATE
             .lock()
-            .map(|state| state.thumbnail_generation == generation)
+            .map(|mut state| {
+                if state.thumbnail_generation != generation {
+                    return false;
+                }
+                state.thumbnail_cache = Some(overlay);
+                true
+            })
             .unwrap_or(false);
-        if still_current {
+        if accepted && last_notification.elapsed() >= std::time::Duration::from_millis(50) {
             unsafe {
                 let hwnd = HWND(hwnd_value as *mut _);
                 if IsWindow(hwnd).as_bool() {
                     let _ = PostMessageW(hwnd, WM_THUMBNAILS_READY, WPARAM(0), LPARAM(0));
                 }
             }
+            last_notification = std::time::Instant::now();
         }
-    });
+        accepted
+    };
+    let _ = ThumbnailOverlay::build_progressive(
+        initial,
+        cache,
+        || {
+            STATE
+                .lock()
+                .map(|state| state.thumbnail_generation == generation)
+                .unwrap_or(false)
+        },
+        publish,
+    );
+    let still_current = STATE
+        .lock()
+        .map(|state| state.thumbnail_generation == generation)
+        .unwrap_or(false);
+    if still_current {
+        unsafe {
+            let hwnd = HWND(hwnd_value as *mut _);
+            if IsWindow(hwnd).as_bool() {
+                let _ = PostMessageW(hwnd, WM_THUMBNAILS_READY, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
 }
 
-fn hover_thumbnail(hwnd: HWND, lparam: LPARAM) {
-    let x = (lparam.0 as u16) as i16 as i32;
-    let y = ((lparam.0 >> 16) as u16) as i16 as i32;
-    let mut bounds = RECT::default();
-    if unsafe { GetWindowRect(hwnd, &mut bounds) }.is_err() {
-        return;
-    }
+fn hover_thumbnail(index: Option<usize>) {
     let changed = STATE
         .lock()
         .ok()
         .and_then(|mut state| {
-            state.thumbnails.as_mut().map(|overlay| {
-                overlay.hover(x, y, bounds.right - bounds.left, bounds.bottom - bounds.top)
-            })
+            state
+                .thumbnails
+                .as_mut()
+                .map(|overlay| overlay.hover_index(index))
         })
         .unwrap_or(false);
     if changed {

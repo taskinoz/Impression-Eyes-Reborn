@@ -75,11 +75,11 @@ impl PickerRenderer {
 
     unsafe fn paint(&mut self, hwnd: HWND) {
         // A nearly transparent background still receives input between cells.
-        for pixel in self.pixels.chunks_exact_mut(4) {
+        for pixel in self.pixels.as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&[0, 0, 0, 1]);
         }
         self.scene.render(&mut self.pixels, self.width, self.height);
-        for pixel in self.pixels.chunks_exact_mut(4) {
+        for pixel in self.pixels.as_chunks_mut::<4>().0 {
             let alpha = pixel[3] as u16;
             for channel in &mut pixel[..3] {
                 *channel = (*channel as u16 * alpha / 255) as u8;

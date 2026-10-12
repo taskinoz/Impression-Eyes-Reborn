@@ -87,6 +87,8 @@ impl Rect {
     }
 }
 
+type ScaledThumbnail = Arc<Mutex<Option<(u32, u32, Arc<RgbaImage>)>>>;
+
 #[derive(Clone)]
 pub struct ThumbnailItem {
     path: PathBuf,
@@ -95,7 +97,7 @@ pub struct ThumbnailItem {
     original_height: u32,
     loaded: bool,
     stamp: Option<FileStamp>,
-    scaled: Arc<Mutex<Option<(u32, u32, Arc<RgbaImage>)>>>,
+    scaled: ScaledThumbnail,
 }
 
 pub struct ImagePreview {
@@ -501,13 +503,10 @@ fn draw_thumbnail(
         let background_alpha = destination[offset + 3] as u32;
         let combined = alpha * 255 + background_alpha * inverse;
         for channel in 0..3 {
-            destination[offset + channel] = if combined == 0 {
-                0
-            } else {
-                ((pixel[channel] as u32 * alpha * 255
-                    + destination[offset + channel] as u32 * background_alpha * inverse)
-                    / combined) as u8
-            };
+            destination[offset + channel] = (pixel[channel] as u32 * alpha * 255
+                + destination[offset + channel] as u32 * background_alpha * inverse)
+                .checked_div(combined)
+                .unwrap_or(0) as u8;
         }
         destination[offset + 3] = (combined / 255) as u8;
     }
